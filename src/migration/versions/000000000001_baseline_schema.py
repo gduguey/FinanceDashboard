@@ -1363,7 +1363,16 @@ def _create_tables() -> None:
 
 def downgrade() -> None:
     """Drop every policy, table, the uuid7 function, and every schema, and revoke the app_runtime role."""
+    # Restricted to the tables that are actually there, for the mirror of the
+    # reason `upgrade` reflects: `tenant_tables` walks live ORM metadata, which
+    # by now names tables later revisions created and this downgrade has
+    # already dropped. `IF EXISTS` covers a missing *policy*, not a missing
+    # relation — `DROP POLICY IF EXISTS ... ON <gone>` still errors.
+    inspector = sa.inspect(op.get_bind())
+    present = {(schema, table) for schema in ("public", *_SCHEMAS) for table in inspector.get_table_names(schema)}
     for tenant in tenant_tables(Base.metadata):
+        if (tenant.schema or "public", tenant.table) not in present:
+            continue
         op.execute(f'DROP POLICY IF EXISTS {POLICY_NAME} ON "{tenant.schema}"."{tenant.table}"')
     _drop_tables()
     # After the tables: while any column still defaults to `uuid7()`, Postgres

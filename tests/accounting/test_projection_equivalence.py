@@ -80,18 +80,39 @@ quietly fall behind.
 def _normalised(row: dict[str, Any]) -> tuple:
     """One row reduced to the values equality is meaningful over.
 
-    `amount` crosses the T1 boundary in both directions — stored as
-    `NUMERIC(18, 4)`, resolved as the float `ledger.frame` sanctions — so
-    both sides are quantized to the storage scale before comparison rather
-    than compared as float against Decimal. That is not a tolerance: it is
-    the same rounding the write itself applies (`db.money.quantize_money`),
-    so a genuinely different amount still fails.
+    Two of them are normalised first — see `_comparable`.
 
     Returns
     -------
     tuple
     """
-    return tuple(quantize_money(row[field]) if field == "amount" else row[field] for field in _COMPARED_FIELDS)
+    return tuple(_comparable(field, row[field]) for field in _COMPARED_FIELDS)
+
+
+def _comparable(field: str, value: Any) -> Any:
+    """One field reduced to the form equality is meaningful over.
+
+    Two fields need it. `amount` crosses the T1 boundary in both directions —
+    stored as `NUMERIC(18, 4)`, resolved as the float `ledger.frame`
+    sanctions — so both sides are quantized to the storage scale rather than
+    compared as float against Decimal. That is not a tolerance: it is the same
+    rounding the write itself applies, so a genuinely different amount still
+    fails.
+
+    `tag_ids` is sorted because the two sides order it differently and neither
+    order is wrong: the raw ledger path sorts by tag natural key inside its
+    `array_agg`, while an override's tags come back in whatever order
+    `PostingOverrideTag` rows are read. A tag *set* is what both mean.
+
+    Returns
+    -------
+    Any
+    """
+    if field == "amount":
+        return quantize_money(value)
+    if field == "tag_ids":
+        return sorted(value or ())
+    return value
 
 
 def _stored_rows(session: Session, user_id: uuid.UUID) -> list[tuple]:
@@ -194,9 +215,11 @@ def test_draining_twice_changes_nothing(seeded_ledger, db_session) -> None:
 # Each is a `(name, mutate)` pair: `mutate` performs the write through the
 # route a user's click takes, and the shared body then asserts the projection
 # still equals the pipeline. Adding a write path means adding a line here —
-# and if one is forgotten, `test_every_resolution_input_is_written_by_a_case`
-# below is what notices, because it watches which tables the battery actually
-# wrote to rather than trusting this list to be complete.
+# and if one is forgotten, the guard is
+# `tests/accounting/test_resolution_sources.py::test_a_real_resolution_reads_no_table_outside_the_declaration`
+# — which watches which tables a resolution *reads* rather than which this
+# battery writes to, so it catches an undeclared input even when no case here
+# exercises the write that changes it.
 # --------------------------------------------------------------------------
 
 

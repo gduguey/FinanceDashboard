@@ -286,8 +286,17 @@ MAX_COLD_REBUILD_SECONDS = 30.0
 The cost the drain-on-read design concentrates rather than removes: a wide
 change — a transfer rule, an account, a category — enqueues every
 transaction, and the next read pays for a full recompute before it answers.
-Measured locally at 0.77 s for 10k transactions and 3.8 s for 50k, both
-including the write of two projection rows per transaction.
+
+This gate measures **517 ms for the 2k tenant and 2,029 ms for the 10k
+tenant**, request included. Those are the numbers to compare a future run
+against; the module docstring's table carries them too.
+
+A separate standalone script measured the recompute *alone*, with no request
+around it and a different seed — 0.77 s over 10k transactions and 3.8 s over
+50k, of which the `COPY` of two projection rows per transaction was 193 ms
+and 1,306 ms. It is quoted here only because it is where the extrapolation to
+about 13 s on the 170k-transaction audit database comes from, and it is
+deliberately not the figure this bound is set against.
 
 Thirty seconds is deliberately loose. What this is defending is that a
 rebuild stays *linear*: the failure that would matter is a recompute that

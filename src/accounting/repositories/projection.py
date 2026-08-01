@@ -440,11 +440,18 @@ def _transfer_flag_predicate(flags: Sequence[str]) -> ColumnElement[bool]:
     sqlalchemy.ColumnElement[bool]
     """
     row = adb.ResolvedPosting
+    # `IS NOT DISTINCT FROM`, not `=`. `transfer_link_source` is nullable, so
+    # `is_linked_transfer AND (source = 'rule')` is `NULL` — not `FALSE` — for a
+    # linked row with no source, which makes `none` null too and drops the row
+    # out of *every* transfer-flag filter at once. Unreachable through
+    # `ledger.transfers.apply_transfer_links`, which sets both columns from the
+    # same join, but this is the same three-valued trap the exclusions already
+    # had once (see `_multi_select`) and it costs nothing to close.
     by_rule = row.resolved_by_transfer_rule_id.is_not(None) | (
-        row.is_linked_transfer & (row.transfer_link_source == "rule")
+        row.is_linked_transfer & row.transfer_link_source.is_not_distinct_from("rule")
     )
     by_hand = row.manual_transfer_override_posting_id.is_not(None) | (
-        row.is_linked_transfer & (row.transfer_link_source == "manual")
+        row.is_linked_transfer & row.transfer_link_source.is_not_distinct_from("manual")
     )
     available: dict[str, ColumnElement[bool]] = {
         "rule": by_rule,

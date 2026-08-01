@@ -228,7 +228,13 @@ def seeded_ledger(client: TestClient, db_session: Session) -> dict:  # noqa: PLR
     )
     assert link.status_code == 201, link.text
 
-    # A retired category, so `apply_category_redirects` has something to do.
+    # A live subcategory, and a category on a second posting. Neither retires
+    # anything — `apply_category_redirects` has an empty map after this
+    # fixture, and the retirement that fills it is
+    # `test_projection_equivalence._rename_a_category_into_another`. The
+    # subcategory is load-bearing for
+    # `test_needs_categorizing_keeps_a_parent_category_with_no_subcategory_picked`,
+    # which needs a parent that has one.
     subcategory = client.post(
         f"{ACCOUNTING}/categories/expense:food-drink/subcategories",
         json={"name": "Takeaway", "color": "#8899aa"},

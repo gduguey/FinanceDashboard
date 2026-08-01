@@ -231,22 +231,31 @@ def test_an_unknown_sort_field_is_rejected_rather_than_ignored(seeded_ledger, cl
 
 
 def test_nulls_sort_last_in_both_directions(seeded_ledger, client) -> None:
-    """Matching `useSortableRows`: a missing category is not the top or the bottom of the list."""
+    """Matching `useSortableRows`: a missing category is not the top or the bottom of the list.
+
+    Asserted as the property itself — no categorized transaction appears
+    after an uncategorized one — rather than by counting the tail. The
+    counting form cannot fail: everything after the last categorized index is
+    uncategorized by the definition of "last", whichever order came back.
+    """
     for descending in (True, False):
         page = _page(client, sort="category_id", descending=descending, limit=500)
-        transactions = list(dict.fromkeys(row["transaction_id"] for row in page["items"]))
-        categorized = {
-            row["transaction_id"]
-            for row in page["items"]
-            if row["category_id"] is not None and row["description"] in _descriptions(page)
-        }
-        last_categorized = max(
-            (index for index, transaction in enumerate(transactions) if transaction in categorized), default=-1
-        )
-        uncategorised_after = [
-            transaction for transaction in transactions[last_categorized + 1 :] if transaction not in categorized
-        ]
-        assert len(uncategorised_after) == len(transactions) - last_categorized - 1
+        categorized_by_transaction: dict[str, bool] = {}
+        for row in _rendered(page):
+            categorized_by_transaction.setdefault(row["transaction_id"], row["category_id"] is not None)
+        order = list(dict.fromkeys(row["transaction_id"] for row in page["items"]))
+        seen_uncategorized = False
+        for transaction_id in order:
+            categorized = categorized_by_transaction.get(transaction_id)
+            if categorized is None:
+                continue
+            if categorized:
+                assert not seen_uncategorized, (
+                    f"a categorized transaction sorted after an uncategorized one with descending={descending}"
+                )
+            else:
+                seen_uncategorized = True
+        assert seen_uncategorized, "the seeded ledger should contain an uncategorized transaction"
 
 
 def test_the_page_carries_every_leg_of_every_transaction_it_covers(seeded_ledger, client) -> None:

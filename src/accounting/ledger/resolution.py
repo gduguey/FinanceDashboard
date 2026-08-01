@@ -323,7 +323,7 @@ def resolve_postings(
 def resolved_display_rows(resolution: ResolvedPostings) -> list[dict[str, Any]]:
     """Render a resolution as the rows the transactions screen shows — every resolved and display-only field.
 
-    The one place these seven derived fields are computed. Four of them
+    The one place these six derived fields are computed. Four of them
     (`pending_source`, `pending_selected`, `resolved_by_transfer_rule_id`,
     `manual_transfer_override_posting_id`) were built inline in
     `api.routers.postings.get_postings`; the projection stores exactly this

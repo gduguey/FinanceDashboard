@@ -169,6 +169,12 @@ def test_a_real_resolution_reads_no_table_outside_the_declaration(seeded_ledger,
     because the honest place for "read, but cannot change the answer" is an
     argued exemption rather than a quietly wider trigger set.
     """
+    # The fixture ran its writes through this same session, so identity-mapped
+    # objects and unexpired attributes are still resident. A resolution stage
+    # reading one of them emits no statement, the table never enters
+    # `observed`, and this fails for a reason that has nothing to do with the
+    # declaration — or, worse, an undeclared read is masked the same way.
+    db_session.expire_all()
     seen: set[str] = set()
 
     def _record(_conn, _cursor, statement, _parameters, _context, _executemany) -> None:
