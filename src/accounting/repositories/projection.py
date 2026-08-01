@@ -792,31 +792,6 @@ def linked_legs(session: Session, user_id: uuid.UUID, transaction_ids: Sequence[
     return legs
 
 
-def matching_posting_ids(session: Session, user_id: uuid.UUID, filters: PostingFilters) -> list[str]:
-    """Every posting id the filter matches, across every page.
-
-    What a filter-shaped bulk action resolves its target set from, inside the
-    same transaction as the write it then performs — so the set cannot shift
-    underneath the operation the way a client-supplied list of ids gathered
-    over several requests could.
-
-    Returns the matching *rows*, not every leg of their transactions:
-    a bulk categorizer acts on the rows a user can see, and a placeholder leg
-    is not one of them.
-
-    Returns
-    -------
-    list[str]
-    """
-    return list(
-        session.execute(
-            select(adb.ResolvedPosting.posting_id)
-            .where(*filter_predicates(user_id, filters))
-            .order_by(adb.ResolvedPosting.posted_at.desc(), adb.ResolvedPosting.posting_id.asc())
-        ).scalars()
-    )
-
-
 def distinct_months(session: Session, user_id: uuid.UUID) -> list[str]:
     """Every `YYYY-MM` this user has a resolved posting in, newest first — the month picker's options (C2).
 

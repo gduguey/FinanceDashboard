@@ -56,7 +56,7 @@ from accounting.taxonomy import seeded_accounts
 
 if TYPE_CHECKING:
     import uuid
-    from collections.abc import Callable, Sequence
+    from collections.abc import Callable
     from datetime import date
 
     from sqlalchemy.orm import Session
@@ -246,7 +246,6 @@ def resolve_postings(
     until: date | None = None,
     limit: int | None = None,
     offset: int = 0,
-    transaction_ids: Sequence[uuid.UUID] | None = None,
 ) -> ResolvedPostings:
     """Resolve the ledger and hand back both the result and the rows it was resolved from.
 
@@ -260,12 +259,6 @@ def resolve_postings(
     duplicates are excluded before the `LIMIT` rather than filtered out of
     the frame afterwards. The overlay stages then run over that page instead
     of over all history, which is what makes the read O(what is shown).
-
-    With `transaction_ids` set, the read is bounded to exactly those
-    transactions and nothing is counted — the shape
-    `repositories.projection` recomputes a batch with, and the shape
-    `GET /postings` uses once its page has been selected from the
-    projection.
 
     Two overlay collections stay unbounded on purpose even for a bounded
     call. Transfer links are loaded whole because a link's *partner* is
@@ -293,19 +286,13 @@ def resolve_postings(
         default, used by every dashboard aggregation) is all of them.
     offset
         How many transactions to skip. Ignored unless `limit` is set.
-    transaction_ids
-        Resolve exactly these transactions (by row id). Mutually exclusive
-        with `limit`; an empty sequence resolves nothing.
 
     Returns
     -------
     ResolvedPostings
     """
     paged_total: int | None = None
-    if transaction_ids is not None:
-        raw = load_ledger(session, user_id, transaction_ids=transaction_ids)
-        overrides = load_overrides_for_postings(session, user_id, raw["posting_id"].to_list())
-    elif limit is None:
+    if limit is None:
         raw = load_ledger(session, user_id, since=since, until=until)
         overrides = load_overrides(session, user_id)
     else:
