@@ -72,10 +72,15 @@ MAX_CONCURRENT_SYNCS = 2
 """How many syncs may run at once across every user in this process.
 
 Two, not one: a second user must not queue behind the first for what can be
-several minutes of waiting on IBKR. Not many more either — the container is
-capped at one CPU and each run holds a database connection out of a pool
-sized for request traffic (`db.settings.AppRuntimeDatabaseSettings`). One
-user cannot occupy both slots; `uq_sync_runs_active_user` already limits
+several minutes of waiting on IBKR. Not many more either, and the bound is
+the connection pool rather than the CPU. A run holds one connection for as
+long as it takes, out of `pool_size = 5` plus `max_overflow = 5`
+(`db.settings.AppRuntimeDatabaseSettings`) shared with every request the
+process is serving — so two long-lived syncs leave eight, and raising this
+without raising those would starve the requests instead. Each progress
+update takes a further connection, but only for one statement.
+
+One user cannot occupy both slots: `uq_sync_runs_active_user` already limits
 them to one run at a time.
 """
 
