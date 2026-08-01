@@ -53,6 +53,21 @@ described a query planned from absent statistics rather than the one the
 application issues. They are not adjusted here, they are replaced: the old
 values are not a baseline this can be compared against.
 
+The first post-B5 CI run, kept because every bound in this module is
+supposed to be derived from CI rather than from a laptop and until now only
+one such figure existed:
+
+| measurement | 2k tenant | 10k tenant | ratio |
+|-------------|-----------|------------|-------|
+| `GET /postings`, 200 | 55 ms | 62 ms | 1.13x |
+| `GET /ledger/export`, 5,000 | 123 ms | 172 ms | 1.40x |
+| deep offset (0 -> 15,000) | 169 ms | 208 ms | 1.23x |
+| `category-totals`, whole history | 119 ms | 426 ms | 3.58x |
+
+and, for the page sizes C6 used to fail on, 79 ms at 400, 136 ms at 1,000
+and 667 ms at `PAGE_LIMIT_MAX`. One run is a datapoint, not a distribution —
+C8 is the item that collects enough of them to tighten the bounds below.
+
 What this gate does not catch, stated plainly
 ---------------------------------------------
 A constant-factor slowdown of roughly 2x or less, and — for now — a page
@@ -68,8 +83,10 @@ the assertion below does not reject it. Tightening the bound to catch it is
 a real option now and deliberately not taken here: local healthy runs sit
 at 1.0-1.8x, CI has historically measured roughly twice the local ratio
 (see `MAX_INCOME_STATEMENT_SCALING_FACTOR`), and a bound derived from a
-quiet laptop is how a gate starts flapping. Item C8 owns tightening it once
-post-B5 CI figures exist to derive it from.
+quiet laptop is how a gate starts flapping. The first post-B5 CI run above
+is encouraging on that front — 1.13x for the postings page, against the
+1.0-1.8x measured locally — but it is one run, and Item C8 owns tightening
+these once there are enough of them to form a distribution.
 
 What changed with C6, and why the ratios above are so much lower than the
 ones this module used to quote: the page's SQL read is now genuinely
@@ -179,8 +196,9 @@ rather than becoming the dominant cost of a backup.
 MAX_POSTINGS_PAGE_SECONDS = 3.0
 """Wall-clock ceiling for one 200-transaction page of `GET /postings` over a 10k-transaction ledger.
 
-Measured locally at 0.065-0.070 s over five runs after B5 and C6, against
-the 0.28 s this constant used to quote. The ceiling is left at 3.0 s, which
+Measured locally at 0.065-0.070 s over five runs after B5 and C6, and at
+64 ms on CI, against the 0.28 s this constant used to quote and the 305 ms
+CI measured before B5. The ceiling is left at 3.0 s, which
 is now roughly 45x rather than 10x — loose, and kept that way for the same
 reason as `MAX_SCALING_FACTOR`: the honest re-derivation needs CI figures
 (item C8), and a wall clock is the coarse backstop here rather than the
@@ -204,7 +222,7 @@ produced a 500 at the 15 s `statement_timeout`, not a slow answer, so any
 ceiling comfortably under that bound catches it.
 
 Measured locally over the 10k ledger, with statistics present: **86 ms at
-400, 132 ms at 1,000 and 427 ms at 5,000**. Four seconds is roughly 9x the
+400, 132 ms at 1,000 and 427 ms at 5,000**; on CI, 79/136/667 ms. Four seconds is roughly 9x the
 largest of those, the same headroom `MAX_POSTINGS_PAGE_SECONDS` carries, and
 well under the 15 s bound whose breach is the actual regression.
 """
@@ -212,8 +230,8 @@ well under the 15 s bound whose breach is the actual regression.
 MAX_EXPORT_PAGE_SECONDS = 2.0
 """Wall-clock ceiling for one 5,000-posting page of `GET /ledger/export`.
 
-Measured locally at 0.119-0.137 s over five runs after B5, against the
-0.17 s this constant used to quote — the export's plan did not depend on
+Measured locally at 0.119-0.137 s over five runs after B5, and at 169 ms on
+CI, against the 0.17 s this constant used to quote — the export's plan did not depend on
 C6's predicate, so it moved only by the amount real statistics were worth.
 Same runner reasoning as `MAX_POSTINGS_PAGE_SECONDS`. The export is the
 cheaper of the two by construction — it applies no overlay — so its ceiling
@@ -244,11 +262,10 @@ repeated; what it concluded still holds for the reason it gave — the cost
 of this endpoint is reading and resolving the ledger, which C5 owns — and
 its scaling ratio is 3.0-3.2x here, well inside linear.
 
-Six seconds is roughly 9x the 656 ms a CI runner measured. That CI figure
-predates B5 and so is itself a pre-statistics number; it is kept as the
-basis for this ceiling because it is the only CI measurement that exists,
-and because keeping a bound derived from the slower of two regimes is the
-safe direction to be wrong in. Item C8 covers replacing it.
+Six seconds is roughly 9x the 656 ms a CI runner measured before B5. The
+first post-B5 CI run measures 555 ms and a 3.58x ratio, so the ceiling keeps
+its headroom rather than needing it; it is left alone until C8 has enough
+runs to re-derive it from a distribution rather than one sample.
 """
 
 
