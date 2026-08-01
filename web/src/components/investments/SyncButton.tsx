@@ -1,7 +1,8 @@
 import { Check, RefreshCw, X } from 'lucide-react'
+import { useEffect, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
-import { useSync, useSyncProgress } from '@/hooks/usePortfolioData'
+import { isSyncFinished, useActiveSyncRun, useStartSync, useSyncRun } from '@/hooks/usePortfolioData'
 import { formatRelativeTime } from '@/lib/format'
 import type { SyncStep } from '@/types/portfolio'
 
@@ -34,26 +35,52 @@ function StepResult({ step }: { step: SyncStep }) {
 // generate the statement — so a bare spinner reads as "is this frozen?"
 // Polling the step/percent the backend reports turns that dead time into
 // a small bar plus a short line of what's actually happening.
+//
+// The sync is its own record on the server now rather than something that
+// happens inside the request this button makes, and two things follow. The
+// button no longer waits for it: the POST comes back at once with a run to
+// watch. And a run this tab never started is still watchable — a reload
+// part-way through, or a second tab, adopts whatever is already in flight
+// instead of showing nothing until it finishes.
 export function SyncButton({ lastSyncedAt }: { lastSyncedAt: string | null }) {
-  const sync = useSync()
-  const progress = useSyncProgress(sync.isPending)
-  const percent = Math.round(progress.data?.percent ?? 0)
+  const start = useStartSync()
+  const active = useActiveSyncRun()
+  const [runId, setRunId] = useState<string | null>(null)
+  const run = useSyncRun(runId)
+
+  // Adopt a sync that was already going when this mounted. Only while this
+  // tab has no run of its own — once the user starts one, `runId` is theirs
+  // and the one-shot `active` query must not overwrite it.
+  useEffect(() => {
+    if (runId === null && active.data) setRunId(active.data.id)
+  }, [runId, active.data])
+
+  const running = runId !== null && !isSyncFinished(run.data)
+  const pending = start.isPending || running
+  const percent = Math.round(run.data?.percent ?? 0)
+  // A run that failed *as a run* — the runner did not finish, or a restart
+  // interrupted it. A failed broker leg is not this: that comes back as a
+  // completed run and is reported per step below.
+  const runError = run.data?.state === 'failed' ? (run.data.error ?? 'Sync failed') : null
 
   return (
     <div className="flex flex-col items-end gap-1">
       <div className="flex items-center gap-3">
-        <span
-          className={`text-xs ${sync.isError || progress.data?.error ? 'text-destructive' : 'text-muted-foreground'}`}
-        >
-          {progress.data?.error ||
-            (sync.isError ? 'Sync failed' : `Last synced ${formatRelativeTime(sync.data?.synced_at ?? lastSyncedAt)}`)}
+        <span className={`text-xs ${start.isError || runError ? 'text-destructive' : 'text-muted-foreground'}`}>
+          {runError ||
+            (start.isError ? 'Sync failed' : `Last synced ${formatRelativeTime(run.data?.synced_at ?? lastSyncedAt)}`)}
         </span>
-        <Button variant="outline" size="sm" disabled={sync.isPending} onClick={() => sync.mutate()}>
-          <RefreshCw className={sync.isPending ? 'animate-spin' : ''} />
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={pending}
+          onClick={() => start.mutate(undefined, { onSuccess: (started) => setRunId(started.id) })}
+        >
+          <RefreshCw className={pending ? 'animate-spin' : ''} />
           Sync
         </Button>
       </div>
-      {sync.isPending && (
+      {pending && (
         <div className="w-40">
           <div className="h-1 w-full overflow-hidden rounded-full bg-muted">
             <div
@@ -62,13 +89,13 @@ export function SyncButton({ lastSyncedAt }: { lastSyncedAt: string | null }) {
             />
           </div>
           <div className="mt-0.5 text-right text-[10px] text-muted-foreground">
-            {progress.data?.step ?? 'Starting…'} · {percent}%
+            {run.data?.step ?? 'Starting…'} · {percent}%
           </div>
         </div>
       )}
-      {!sync.isPending && sync.data?.steps && (
+      {!pending && run.data && run.data.steps.length > 0 && (
         <div className="flex flex-wrap justify-end gap-x-3 gap-y-0.5 text-[11px] text-muted-foreground">
-          {sync.data.steps.map((step) => (
+          {run.data.steps.map((step) => (
             <StepResult key={step.label} step={step} />
           ))}
         </div>

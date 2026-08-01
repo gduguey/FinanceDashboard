@@ -20,7 +20,6 @@ from accounting.api.api_models import (
     SubcategoryCreate,
 )
 from accounting.api.entities import Category
-from accounting.api.locations import CREATED_WITH_LOCATION, location_of
 from accounting.importers.ingest import load_ledger
 from accounting.models import Budget
 from accounting.models import Category as DomainCategory
@@ -46,6 +45,7 @@ from accounting.taxonomy import (
 )
 from db.current_user import get_current_user_id
 from db.session import get_db
+from http_api.locations import CREATED_WITH_LOCATION, location_of
 
 router = APIRouter()
 

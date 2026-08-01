@@ -37,7 +37,6 @@ from accounting.api.entities import (
     PostingSplitLeg,
     TransferLink,
 )
-from accounting.api.locations import created_or_replaced, location_of
 from accounting.ledger.duplicates import DuplicateGroup as DuplicateGroupData
 from accounting.ledger.duplicates import find_duplicate_candidates
 from accounting.ledger.pending import resolve_pending_suggestion
@@ -78,6 +77,7 @@ from accounting.utils.statement_archive import StatementArchive
 from db.current_user import get_current_user_id
 from db.money import ZERO, quantize_money
 from db.session import get_db
+from http_api.locations import created_or_replaced, location_of
 from http_api.pagination import PAGE_LIMIT_DEFAULT, PAGE_LIMIT_MAX
 
 router = APIRouter()

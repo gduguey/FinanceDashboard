@@ -75,12 +75,38 @@ public contract, and break every client silently the day it changed. A `POST`
 that reports honestly which of two things it did is the better contract.
 
 `Location` is always built with `request.url_for` through
-`accounting.api.locations.location_of`, never formatted by hand: a header
+`http_api.locations.location_of`, never formatted by hand: a header
 naming an unregistered route then raises at the create instead of shipping an
 address that 404s when followed. Every 201 also *declares* its `Location` in
 the schema (`CREATED_WITH_LOCATION`), because FastAPI derives bodies from
 return annotations and knows nothing about headers — an undeclared header is
 invisible to `web/src/types/schema.ts` and indistinguishable from an absent one.
+
+That module sits in `http_api` rather than under `accounting.api` because a
+response header is wire format, which neither ledger owns — the same placement
+argument `Page` settled. `trades` answering the app's one `202` is what forced
+the question.
+
+## Work that does not finish inside the request
+
+**A route that starts work it will not complete answers `202 Accepted` with a
+`Location` naming the resource that reports on it.** One route does today:
+`POST /api/v1/trades/sync-runs`, which starts a broker sync. The distinction
+from a `201` is what the address means — a `201`'s `Location` names a resource
+that now exists as asked for, a `202`'s names one that exists only to be
+polled — and it is declared through `ACCEPTED_WITH_LOCATION` for the same
+reason a `201`'s is. `tests/api/test_status_codes.py` asserts both the
+declaration and the exact set of routes allowed to answer `202`, so a route
+gaining or losing one is a deliberate act.
+
+A `303 See Other` was considered here and is **dropped permanently**. There is
+no created resource to redirect to that the `Location` does not already name,
+and `fetch()` follows a redirect invisibly, so a browser client could not
+distinguish it from the `200` the synchronous endpoint already answered.
+
+Starting the same work twice is a `409`, and that response carries a
+`Location` too — pointing at the run already in flight, so a client that lost
+track of one is handed it back rather than merely refused.
 
 ## Updates
 

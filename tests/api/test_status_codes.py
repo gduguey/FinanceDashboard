@@ -63,7 +63,7 @@ _CREATES = {
 # The subset of `_CREATES` that can also answer 200, because the id comes from
 # the request's own content and the write is an upsert (or, for transfer links,
 # a no-op re-confirm). Each declares both statuses through
-# `accounting.api.locations.created_or_replaced`; a blanket 201 on these would
+# `http_api.locations.created_or_replaced`; a blanket 201 on these would
 # report a replace as a creation and attach a `Location` for a resource the
 # request did not create.
 _CREATE_OR_REPLACE = {
@@ -74,6 +74,15 @@ _CREATE_OR_REPLACE = {
     ("post", "/api/v1/accounting/posting-merges"),
     ("post", "/api/v1/accounting/transfer-links"),
     ("post", "/api/v1/accounting/transfer-rules"),
+}
+
+
+# Every route that starts work it does not finish, and therefore answers
+# `202 Accepted` with a `Location` naming the resource that reports on it.
+# One today: a broker sync, which the client polls to completion. See
+# `trades.api.routers.sync`.
+_ACCEPTS = {
+    ("post", "/api/v1/trades/sync-runs"),
 }
 
 
@@ -112,7 +121,7 @@ def test_every_201_declares_the_location_header_it_answers_with(paths) -> None:
     nothing about headers, so a `Location` set only in a handler is real on
     the wire but absent from the schema — and therefore absent from
     `web/src/types/schema.ts` and from `/docs`. Every create declares it
-    through `accounting.api.locations.CREATED_WITH_LOCATION`; this fails
+    through `http_api.locations.CREATED_WITH_LOCATION`; this fails
     for one that sets the header without declaring it, or declares the
     status without the header.
     """
@@ -124,6 +133,42 @@ def test_every_201_declares_the_location_header_it_answers_with(paths) -> None:
         and "Location" not in operation["responses"]["201"].get("headers", {})
     ]
     assert missing == []
+
+
+def test_every_202_declares_the_location_header_it_answers_with(paths) -> None:
+    """A `202` owes the caller the address of the work it just started.
+
+    The same guarantee as the `201` case above and for the same mechanical
+    reason — an undeclared header is invisible to the generated client — but
+    it matters more here, because the whole point of a `202` is that the
+    client has to come back. A body saying "accepted" with no address to poll
+    is a dead end.
+    """
+    missing = [
+        (path, method)
+        for path, operations in paths.items()
+        for method, operation in operations.items()
+        if "202" in operation.get("responses", {})
+        and "Location" not in operation["responses"]["202"].get("headers", {})
+    ]
+    assert missing == []
+
+
+def test_the_long_running_starts_are_exactly_the_routes_that_answer_202(paths) -> None:
+    """A `202` is a promise that the work is *not* done, so gaining or losing one is a contract change.
+
+    Listed rather than derived, like `_CREATES`: a route that starts
+    answering 202 has decided its work no longer finishes inside the request,
+    and one that stops has decided the opposite. Neither should be able to
+    happen without this list moving.
+    """
+    answering = {
+        (method, path)
+        for path, operations in paths.items()
+        for method, operation in operations.items()
+        if "202" in operation.get("responses", {})
+    }
+    assert answering == _ACCEPTS
 
 
 def test_the_deletes_that_keep_a_body_are_exactly_the_listed_exceptions(paths) -> None:

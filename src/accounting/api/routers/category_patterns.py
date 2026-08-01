@@ -10,7 +10,6 @@ from sqlalchemy.orm import Session
 
 from accounting.api.api_models import CategoryPatternCreate, CategoryPatternUpdate
 from accounting.api.entities import CategoryPattern
-from accounting.api.locations import created_or_replaced, location_of
 from accounting.importers.common import row_hash
 from accounting.models import CategoryPattern as DomainCategoryPattern
 from accounting.repositories.interpretation import (
@@ -22,6 +21,7 @@ from accounting.repositories.interpretation import (
 from accounting.taxonomy import seed_new_user_defaults
 from db.current_user import get_current_user_id
 from db.session import get_db
+from http_api.locations import created_or_replaced, location_of
 
 router = APIRouter()
 

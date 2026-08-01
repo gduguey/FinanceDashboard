@@ -13,15 +13,7 @@ from http_api.pagination import Page
 from trades.api.entities import LedgerEvent
 from trades.config import TaxRegime, validate_iana_zone_name
 from trades.dashboard.cash_sitting import WarningLevel
-
-
-class SyncProgress(BaseModel):
-    """A snapshot of an in-flight (or just-finished) sync, for the frontend's progress bar."""
-
-    step: str
-    percent: float
-    done: bool
-    error: str | None = None
+from trades.db.models import SyncRunState
 
 
 class Overview(BaseModel):
@@ -468,6 +460,47 @@ class SyncResult(BaseModel):
     new_event_count: int
     total_event_count: int
     steps: list[SyncStep]
+
+
+class SyncRunResource(BaseModel):
+    """One sync run: where it has got to, and what it did.
+
+    Progress and result on one resource rather than two, because a client
+    polling to completion then already holds the outcome and needs no second
+    request for it. Everything from `synced_at` down is the old `SyncResult`,
+    which is why those fields carry their zero values until the run finishes
+    rather than being optional — an unfinished run has synced nothing, and
+    `state` is what says whether the numbers mean anything yet.
+
+    `state` is `succeeded` even when the broker leg failed. A sync commits
+    per successful step and rolls back per failed one, so a partly-successful
+    pull is a completed run whose `steps` says what did not work — the same
+    contract the synchronous endpoint had when it answered 200 with a failed
+    step. `failed` means the runner itself did not finish, and `error` says
+    why.
+    """
+
+    id: uuid.UUID
+    state: SyncRunState
+    step: str
+    percent: float
+    error: str | None
+    started_at: datetime | None
+    finished_at: datetime | None
+
+    synced_at: str | None
+    new_event_count: int
+    total_event_count: int
+    steps: list[SyncStep]
+
+
+class SyncRunPage(Page[SyncRunResource, Literal["run"]]):
+    """One page of this user's sync runs, newest first.
+
+    Exists so a reload during a sync can find the run it lost the id of, and
+    a sync history falls out of it. Its window unit is `run` — the envelope
+    is shared, the collections are not (see `LedgerEventPage`).
+    """
 
 
 class LedgerEventPage(Page[LedgerEvent, Literal["event"]]):

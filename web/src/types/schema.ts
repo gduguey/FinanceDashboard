@@ -359,7 +359,7 @@ export interface paths {
      * @description Return one tag by id.
      *
      *     The address `post_tag` advertises in its `Location` — see
-     *     `api.locations.location_of` for why the header is resolved against
+     *     `http_api.locations.location_of` for why the header is resolved against
      *     this route rather than formatted by hand.
      *
      *     Returns
@@ -4037,7 +4037,7 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/v1/trades/sync/progress': {
+  '/api/v1/trades/sync-runs': {
     parameters: {
       query?: never
       header?: never
@@ -4045,61 +4045,80 @@ export interface paths {
       cookie?: never
     }
     /**
-     * Get Sync Progress
-     * @description Return the current (or most recently finished) sync's progress — this user's own, never anyone else's.
+     * Get Sync Runs
+     * @description List this user's sync runs, newest first.
      *
-     *     Polled by the frontend's progress bar while a sync is running.
-     *     `POST /api/v1/trades/sync` runs in FastAPI's thread pool (it's a plain `def`,
-     *     not `async def`), so this GET is served concurrently on its own
-     *     thread rather than queued behind the sync request.
+     *     The reason this exists rather than only the item `GET`: a browser reload
+     *     part-way through a sync loses the run id the `POST` returned, and with no
+     *     way to ask "what is my latest run" the progress bar would simply die for
+     *     the rest of that sync. A sync history falls out of it for free.
+     *
+     *     Bounded like every other collection here — a page is capped at
+     *     `PAGE_LIMIT_MAX`, and a larger `limit` is clamped rather than rejected.
      *
      *     Returns
      *     -------
-     *     SyncProgress
-     *         `step`, `percent`, `done`, `error` — `"Idle"`/`0.0`/`True`/`None`
-     *         if this user has never triggered a sync.
+     *     SyncRunPage
      */
-    get: operations['get_sync_progress_api_v1_trades_sync_progress_get']
+    get: operations['get_sync_runs_api_v1_trades_sync_runs_get']
     put?: never
-    post?: never
+    /**
+     * Post Sync Run
+     * @description Start a sync and answer immediately with the run that will report on it.
+     *
+     *     `202`, not `200`: the pull has not happened when this returns, and the
+     *     IBKR leg alone can take minutes. `Location` names the run, which is where
+     *     a client watches it.
+     *
+     *     A second start while one is in flight is a `409` whose own `Location`
+     *     points at the run already going — so a client that lost track of a run
+     *     is handed it back rather than only refused. That refusal comes from
+     *     `uq_sync_runs_active_user`, a partial unique index, not from a check in
+     *     this handler: the per-process lock it replaced could only serialize the
+     *     worker it happened to live in.
+     *
+     *     Returns
+     *     -------
+     *     SyncRunResource
+     *         The `queued` run, with nothing filled in yet but its identity.
+     *
+     *     Raises
+     *     ------
+     *     HTTPException
+     *         409 if this user already has a sync in flight.
+     */
+    post: operations['post_sync_run_api_v1_trades_sync_runs_post']
     delete?: never
     options?: never
     head?: never
     patch?: never
     trace?: never
   }
-  '/api/v1/trades/sync': {
+  '/api/v1/trades/sync-runs/{run_id}': {
     parameters: {
       query?: never
       header?: never
       path?: never
       cookie?: never
     }
-    get?: never
-    put?: never
     /**
-     * Sync
-     * @description Pull the latest IBKR statement into the ledger.
-     *
-     *     Price, benchmark, CPI, and HYSA-rate cache refreshes no longer happen
-     *     here — they run on their own cron schedule instead. Reports progress to
-     *     this user's own entry in `app.state.sync_progress` throughout, readable
-     *     via `GET /api/v1/trades/sync/progress` — the IBKR pull can take a while, so a
-     *     bare spinner isn't good enough feedback.
-     *
-     *     Concurrent requests for the *same* user are serialized by that user's
-     *     own lock, to prevent ledger corruption from simultaneous writes — see
-     *     `_lock_for_user`. Two different users syncing at the same time never
-     *     wait on each other: their syncs write to different, non-overlapping
-     *     ledger rows.
+     * Get Sync Run
+     * @description Report one sync run — its progress while it is going, its result once it is done.
      *
      *     Returns
      *     -------
-     *     SyncResult
-     *         `synced_at`, `new_event_count`, `total_event_count`, and `steps`
-     *         — the one IBKR leg's own `label`/`ok`/`error`.
+     *     SyncRunResource
+     *
+     *     Raises
+     *     ------
+     *     HTTPException
+     *         404 if no such run belongs to this user. Another tenant's run is
+     *         invisible rather than forbidden (Row-Level Security), so it answers
+     *         the same way a run that never existed does.
      */
-    post: operations['sync_api_v1_trades_sync_post']
+    get: operations['get_sync_run_api_v1_trades_sync_runs__run_id__get']
+    put?: never
+    post?: never
     delete?: never
     options?: never
     head?: never
@@ -6963,24 +6982,67 @@ export interface components {
       exchange: string
     }
     /**
-     * SyncProgress
-     * @description A snapshot of an in-flight (or just-finished) sync, for the frontend's progress bar.
+     * SyncRunPage
+     * @description One page of this user's sync runs, newest first.
+     *
+     *     Exists so a reload during a sync can find the run it lost the id of, and
+     *     a sync history falls out of it. Its window unit is `run` — the envelope
+     *     is shared, the collections are not (see `LedgerEventPage`).
      */
-    SyncProgress: {
+    SyncRunPage: {
+      /** Items */
+      items: components['schemas']['SyncRunResource'][]
+      /**
+       * Window Unit
+       * @constant
+       */
+      window_unit: 'run'
+      /** Total */
+      total: number
+      /** Limit */
+      limit: number
+      /** Offset */
+      offset: number
+    }
+    /**
+     * SyncRunResource
+     * @description One sync run: where it has got to, and what it did.
+     *
+     *     Progress and result on one resource rather than two, because a client
+     *     polling to completion then already holds the outcome and needs no second
+     *     request for it. Everything from `synced_at` down is the old `SyncResult`,
+     *     which is why those fields carry their zero values until the run finishes
+     *     rather than being optional — an unfinished run has synced nothing, and
+     *     `state` is what says whether the numbers mean anything yet.
+     *
+     *     `state` is `succeeded` even when the broker leg failed. A sync commits
+     *     per successful step and rolls back per failed one, so a partly-successful
+     *     pull is a completed run whose `steps` says what did not work — the same
+     *     contract the synchronous endpoint had when it answered 200 with a failed
+     *     step. `failed` means the runner itself did not finish, and `error` says
+     *     why.
+     */
+    SyncRunResource: {
+      /**
+       * Id
+       * Format: uuid
+       */
+      id: string
+      /**
+       * State
+       * @enum {string}
+       */
+      state: 'queued' | 'running' | 'succeeded' | 'failed'
       /** Step */
       step: string
       /** Percent */
       percent: number
-      /** Done */
-      done: boolean
       /** Error */
-      error?: string | null
-    }
-    /**
-     * SyncResult
-     * @description The outcome of a sync: what changed in the ledger, plus each independent leg's own success/failure.
-     */
-    SyncResult: {
+      error: string | null
+      /** Started At */
+      started_at: string | null
+      /** Finished At */
+      finished_at: string | null
       /** Synced At */
       synced_at: string | null
       /** New Event Count */
@@ -11851,9 +11913,14 @@ export interface operations {
       }
     }
   }
-  get_sync_progress_api_v1_trades_sync_progress_get: {
+  get_sync_runs_api_v1_trades_sync_runs_get: {
     parameters: {
-      query?: never
+      query?: {
+        /** @description How many runs to return, newest first. */
+        limit?: number
+        /** @description How many runs to skip. */
+        offset?: number
+      }
       header?: never
       path?: never
       cookie?: never
@@ -11866,16 +11933,49 @@ export interface operations {
           [name: string]: unknown
         }
         content: {
-          'application/json': components['schemas']['SyncProgress']
+          'application/json': components['schemas']['SyncRunPage']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
         }
       }
     }
   }
-  sync_api_v1_trades_sync_post: {
+  post_sync_run_api_v1_trades_sync_runs_post: {
     parameters: {
       query?: never
       header?: never
       path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      202: {
+        headers: {
+          /** @description URL of the resource tracking the work this request started. */
+          Location?: string
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['SyncRunResource']
+        }
+      }
+    }
+  }
+  get_sync_run_api_v1_trades_sync_runs__run_id__get: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        run_id: string
+      }
       cookie?: never
     }
     requestBody?: never
@@ -11886,7 +11986,16 @@ export interface operations {
           [name: string]: unknown
         }
         content: {
-          'application/json': components['schemas']['SyncResult']
+          'application/json': components['schemas']['SyncRunResource']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
         }
       }
     }

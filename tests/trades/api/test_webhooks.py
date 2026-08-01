@@ -18,7 +18,10 @@ from svix.webhooks import Webhook
 
 import db.session as session_module
 import trades.api as trades_api
+from sqlalchemy.orm import Session
+
 from db.external_identities import lookup_user_id
+from db.models import ExternalIdentity, User
 from db.session import get_db
 from trades.api import webhooks as webhooks_module
 from trades.api.auth import require_clerk_session
@@ -47,6 +50,38 @@ def _webhook_uses_the_test_engine(monkeypatch: pytest.MonkeyPatch, _db_engine: E
     directly.
     """
     monkeypatch.setattr(session_module, "get_engine", lambda: _db_engine)
+
+
+@pytest.fixture(autouse=True)
+def _clean_up_what_the_webhook_really_committed(_db_engine: Engine):
+    """Delete the rows these tests commit, since nothing rolls them back.
+
+    The handler provisions through `db.session.session_scope`, which opens
+    its own session and commits for real — it has to, it is a webhook and
+    there is no request transaction to join. So unlike almost every other
+    test in this repo these leave rows behind in the shared scratch
+    database, and the clerk ids they use are fixed strings rather than
+    per-run uuids.
+
+    That was a live defect, not a hypothetical one: `user_redelivered`
+    survived into `tests/db/test_external_identities.py`, whose own test of
+    the same id then read the leaked row and failed. Invisible in the
+    default run only because `testpaths` collects `tests/db` *before*
+    `tests/trades`, so the leak lands after the test it breaks — running the
+    two directories in the other order failed on `v1.9.0` too.
+    """
+    with Session(_db_engine) as before:
+        existing = {(row.provider, row.external_id) for row in before.query(ExternalIdentity).all()}
+    yield
+    with Session(_db_engine) as after:
+        leaked = [row for row in after.query(ExternalIdentity).all() if (row.provider, row.external_id) not in existing]
+        user_ids = [row.user_id for row in leaked]
+        for row in leaked:
+            after.delete(row)
+        after.flush()
+        for user_id in user_ids:
+            after.query(User).filter_by(id=user_id).delete()
+        after.commit()
 
 
 def _signed_headers_and_body(payload: dict[str, object]) -> tuple[dict[str, str], str]:

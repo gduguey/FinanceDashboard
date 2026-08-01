@@ -8,13 +8,12 @@ import pytest
 from fastapi.testclient import TestClient
 
 import db.models as dbm
-from db.current_user import get_current_user_id
+from sqlalchemy import text
 from db.session import get_db
 from http_api.pagination import PAGE_LIMIT_MAX
 from tests.conftest import DEFAULT_USER_ID
 from trades import api as trades_api
-from trades.brokers.ibkr.credentials import save_ibkr_credentials
-from trades.brokers.ibkr.main import IbkrSyncResult, _write_ledger
+from trades.brokers.ibkr.main import _write_ledger
 from trades.config import AppConfig
 from trades.models import LedgerEvent
 from trades.utils.io_utils import write_csv_atomic
@@ -91,7 +90,6 @@ def isolated_config(tmp_path, monkeypatch, db_session):
         hysa_rates={"cache_dir": tmp_path / "hysa_rates"},
     )
     monkeypatch.setattr(trades_api.app.state, "config", config)
-    monkeypatch.setattr(trades_api.app.state, "sync_progress", {})
 
     _write_ledger(pl.DataFrame(LEDGER_ROWS, schema=LedgerEvent.polars_schema), db_session, user_id=DEFAULT_USER_ID)
     price_history = pl.DataFrame({
@@ -584,135 +582,105 @@ def test_ledger_export_past_the_end_is_an_empty_page_not_an_error(client) -> Non
     assert body["total"] == len(LEDGER_ROWS)
 
 
-def test_sync_calls_ibkr_and_never_touches_price_cpi_hysa_caches(client, db_session, monkeypatch) -> None:
-    save_ibkr_credentials(db_session, DEFAULT_USER_ID, token="test-token", query_id="12345")  # noqa: S106
+@pytest.fixture
+def captured_jobs(monkeypatch):
+    """Hold whatever `POST /sync-runs` hands the runner, instead of running it on a thread.
 
-    def fake_sync(credentials, config, session, user_id, on_progress=None):
-        raw_dir = config.ibkr.raw_statement_dir
-        raw_dir.mkdir(parents=True, exist_ok=True)
-        (raw_dir / "20260104T000000.xml").write_text("<FlexQueryResponse />", encoding="utf-8")
-        sync_calls.append((credentials, config))
-        return IbkrSyncResult(
-            pulled_at=datetime(2026, 1, 4),
-            statement_from_date=date(2026, 1, 4),
-            statement_to_date=date(2026, 1, 4),
-            new_event_count=0,
-            total_event_count=3,
-        )
+    These are route tests: what they are about is the `202`, the `Location`
+    and the run row, not the pull. The runner's own behaviour — partial
+    success, a crash closing the run, the restart sweep — needs sessions that
+    really commit and is covered in `tests/trades/api/test_sync_runs.py`.
 
-    sync_calls = []
-    monkeypatch.setattr(trades_api.main, "sync_ibkr_account", fake_sync)
-
-    def _must_not_be_called(*args, **kwargs):
-        message = "these caches now refresh via a standalone cron job, not /api/v1/trades/sync"
-        raise AssertionError(message)
-
-    monkeypatch.setattr(trades_api.prices, "update_price_caches", _must_not_be_called)
-    monkeypatch.setattr(trades_api.prices, "update_price_cache", _must_not_be_called)
-    monkeypatch.setattr(trades_api.cpi_module, "update_cpi_cache", _must_not_be_called)
-    monkeypatch.setattr(trades_api.hysa_rates_module, "update_hysa_rates_cache", _must_not_be_called)
-
-    response = client.post("/api/v1/trades/sync")
-
-    assert response.status_code == 200
-    assert len(sync_calls) == 1
-    body = response.json()
-    assert "symbols_refreshed" not in body
-    assert body["steps"] == [{"label": "IBKR data", "ok": True, "error": None}]
-
-
-def test_sync_progress_defaults_to_idle_and_done(client) -> None:
-    body = client.get("/api/v1/trades/sync/progress").json()
-    assert body == {"step": "Idle", "percent": 0.0, "done": True, "error": None}
-
-
-def test_sync_progress_reflects_done_after_a_successful_sync(client, monkeypatch) -> None:
-    monkeypatch.setenv("IBKR_FLEX_WEB_SERVICE_TOKEN", "test-token")
-    monkeypatch.setenv("IBKR_QUERY_ID", "12345")
-
-    def fake_sync(credentials, config, session, user_id, on_progress=None):
-        raw_dir = config.ibkr.raw_statement_dir
-        raw_dir.mkdir(parents=True, exist_ok=True)
-        (raw_dir / "20260104T000000.xml").write_text("<FlexQueryResponse />", encoding="utf-8")
-        return IbkrSyncResult(
-            pulled_at=datetime(2026, 1, 4),
-            statement_from_date=date(2026, 1, 4),
-            statement_to_date=date(2026, 1, 4),
-            new_event_count=0,
-            total_event_count=3,
-        )
-
-    monkeypatch.setattr(trades_api.main, "sync_ibkr_account", fake_sync)
-
-    client.post("/api/v1/trades/sync")
-
-    body = client.get("/api/v1/trades/sync/progress").json()
-    assert body == {"step": "Done", "percent": 100.0, "done": True, "error": None}
-
-
-def test_sync_reports_a_failed_step_when_ibkr_fails(client, db_session, monkeypatch) -> None:
-    """A bad IBKR token still returns 200 — it's the one step's `ok` that reports it, not the HTTP status.
-
-    `total_event_count` falls back to whatever's already in the ledger,
-    since IBKR itself never produced a fresh count.
+    Returns
+    -------
+    list
+        One entry per submitted job.
     """
-    save_ibkr_credentials(db_session, DEFAULT_USER_ID, token="test-token", query_id="12345")  # noqa: S106
-
-    def failing_sync(credentials, config, session, user_id, on_progress=None):
-        message = "IBKR Flex API error 1018: too many requests"
-        raise ValueError(message)
-
-    monkeypatch.setattr(trades_api.main, "sync_ibkr_account", failing_sync)
-
-    response = client.post("/api/v1/trades/sync")
-
-    assert response.status_code == 200
-    body = response.json()
-    assert body["steps"] == [
-        {"label": "IBKR data", "ok": False, "error": "IBKR Flex API error 1018: too many requests"}
-    ]
-    assert body["total_event_count"] == len(LEDGER_ROWS)
-    assert body["new_event_count"] == 0
-
-    # The sync as a *whole* still finished normally — only the individual
-    # leg is what failed.
-    progress = client.get("/api/v1/trades/sync/progress").json()
-    assert progress == {"step": "Done", "percent": 100.0, "done": True, "error": None}
+    jobs = []
+    monkeypatch.setattr(trades_api.sync_runs.runner, "submit", jobs.append)
+    return jobs
 
 
-def test_sync_progress_is_not_shared_between_users(client, monkeypatch) -> None:
-    """Regression test: `app.state.sync_progress` used to be one shared value for every user.
+def test_starting_a_sync_answers_202_with_the_run_it_created(client, captured_jobs) -> None:
+    """`202`, not `200`: nothing has been pulled when this returns.
 
-    A user who never synced must never see another user's step/percent —
-    see `trades.api.routers.sync`'s per-user `_sync_locks`/`sync_progress` design.
+    The `Location` is the whole contract — a `202` with no address to poll
+    is a dead end — so it is asserted to be a real, followable URL rather
+    than merely present.
     """
-    monkeypatch.setenv("IBKR_FLEX_WEB_SERVICE_TOKEN", "test-token")
-    monkeypatch.setenv("IBKR_QUERY_ID", "12345")
+    response = client.post("/api/v1/trades/sync-runs")
 
-    def fake_sync(credentials, config, session, user_id, on_progress=None):
-        raw_dir = config.ibkr.raw_statement_dir
-        raw_dir.mkdir(parents=True, exist_ok=True)
-        (raw_dir / "20260104T000000.xml").write_text("<FlexQueryResponse />", encoding="utf-8")
-        return IbkrSyncResult(
-            pulled_at=datetime(2026, 1, 4),
-            statement_from_date=date(2026, 1, 4),
-            statement_to_date=date(2026, 1, 4),
-            new_event_count=0,
-            total_event_count=3,
-        )
+    assert response.status_code == 202
+    body = response.json()
+    assert body["state"] == "queued"
+    assert body["percent"] == pytest.approx(0.0)
+    assert body["steps"] == []
+    assert response.headers["Location"].endswith(f"/api/v1/trades/sync-runs/{body['id']}")
+    assert len(captured_jobs) == 1
 
-    monkeypatch.setattr(trades_api.main, "sync_ibkr_account", fake_sync)
+    followed = client.get(response.headers["Location"])
+    assert followed.status_code == 200
+    assert followed.json()["id"] == body["id"]
 
-    # DEFAULT_USER_ID (the client fixture's own identity) runs a sync to completion.
-    client.post("/api/v1/trades/sync")
-    assert client.get("/api/v1/trades/sync/progress").json()["step"] == "Done"
 
-    # A second, different user who never synced must still see "Idle" — not
-    # DEFAULT_USER_ID's "Done", and not DEFAULT_USER_ID's percent/error either.
-    other_user_id = uuid.uuid4()
-    trades_api.app.dependency_overrides[get_current_user_id] = lambda: other_user_id
-    try:
-        progress = client.get("/api/v1/trades/sync/progress").json()
-    finally:
-        trades_api.app.dependency_overrides[get_current_user_id] = lambda: DEFAULT_USER_ID
-    assert progress == {"step": "Idle", "percent": 0.0, "done": True, "error": None}
+def test_a_second_sync_while_one_is_running_is_a_409_naming_the_run_in_flight(client, captured_jobs) -> None:
+    """The refusal comes from `uq_sync_runs_active_user`, not from a check in the handler.
+
+    A per-process lock could only ever serialize the worker it lived in. The
+    `Location` on the 409 is what makes this useful rather than merely
+    correct: a client that lost its run id (a browser reload mid-sync) gets
+    handed it back.
+    """
+    first = client.post("/api/v1/trades/sync-runs")
+
+    second = client.post("/api/v1/trades/sync-runs")
+
+    assert second.status_code == 409
+    assert second.headers["Location"].endswith(f"/api/v1/trades/sync-runs/{first.json()['id']}")
+    assert len(captured_jobs) == 1, "the refused request must not also have started a sync"
+
+
+def test_a_finished_run_frees_the_slot_for_the_next_one(client, captured_jobs, db_session) -> None:
+    """`uq_sync_runs_active_user` is partial, so only `queued`/`running` occupy the slot."""
+    first = client.post("/api/v1/trades/sync-runs").json()
+    db_session.execute(text("UPDATE trades.sync_runs SET state = 'succeeded' WHERE id = :id"), {"id": first["id"]})
+    db_session.commit()
+
+    second = client.post("/api/v1/trades/sync-runs")
+
+    assert second.status_code == 202
+    assert second.json()["id"] != first["id"]
+    assert len(captured_jobs) == 2
+
+
+def test_a_run_that_does_not_exist_is_a_404(client) -> None:
+    assert client.get(f"/api/v1/trades/sync-runs/{uuid.uuid4()}").status_code == 404
+
+
+def test_listing_runs_returns_them_newest_first_on_the_shared_envelope(client, captured_jobs, db_session) -> None:
+    """The list is what lets a reload mid-sync find the run whose id it lost."""
+    ids = []
+    for _ in range(3):
+        ids.append(client.post("/api/v1/trades/sync-runs").json()["id"])
+        db_session.execute(text("UPDATE trades.sync_runs SET state = 'succeeded'"))
+        db_session.commit()
+
+    body = client.get("/api/v1/trades/sync-runs").json()
+
+    assert body["window_unit"] == "run"
+    assert body["total"] == 3
+    assert [item["id"] for item in body["items"]] == list(reversed(ids))
+
+
+def test_listing_runs_pages(client, captured_jobs, db_session) -> None:
+    for _ in range(3):
+        client.post("/api/v1/trades/sync-runs")
+        db_session.execute(text("UPDATE trades.sync_runs SET state = 'succeeded'"))
+        db_session.commit()
+
+    body = client.get("/api/v1/trades/sync-runs", params={"limit": 2, "offset": 1}).json()
+
+    assert len(body["items"]) == 2
+    assert body["total"] == 3
+    assert body["limit"] == 2
+    assert body["offset"] == 1

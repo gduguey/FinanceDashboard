@@ -69,6 +69,19 @@ _SEED = (
         "trades.broker_connections",
         "INSERT INTO trades.broker_connections (user_id, natural_key, broker) VALUES (:tenant, :key, 'ibkr')",
     ),
+    # A fourth shape, added with the sync runner: a table whose rows are
+    # written by a *background thread* rather than by the request that
+    # started the work. The policy is the same generated one, but the writer
+    # is a session nobody's request owns, so "the runner sees only its own
+    # user's runs" is worth asserting once rather than assumed.
+    (
+        "trades.sync_runs",
+        (
+            "INSERT INTO trades.sync_runs "
+            "(user_id, state, step, percent, new_event_count, total_event_count, steps) "
+            "VALUES (:tenant, 'succeeded', 'Done', 100.0, 0, 0, '[]'::jsonb)"
+        ),
+    ),
 )
 
 _TABLES = [table for table, _ in _SEED]

@@ -5,13 +5,14 @@ import type {
   BenchmarkSettingUpdate,
   HysaSettingsUpdate,
   IbkrSettingsUpdate,
+  SyncRun,
   TargetAllocationPatch,
   TaxSettingsUpdate,
   TimezoneSettingUpdate,
 } from '@/types/portfolio'
 
 // One query key per endpoint, grouped under a shared "portfolio" root so a
-// single invalidate (see useSync below) refreshes every panel at once.
+// single invalidate (see useSyncRun below) refreshes every panel at once.
 const keys = {
   overview: ['portfolio', 'overview'],
   dollarChart: (range?: DateRange) => ['portfolio', 'chart', 'dollar', range ?? {}],
@@ -162,24 +163,67 @@ export function useIbkrConnectionStatus(): { state: ConnectionState; error: stri
   return { state: 'connected', error: null }
 }
 
-export function useSync() {
-  const queryClient = useQueryClient()
-  return useMutation({
-    mutationFn: api.sync,
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['portfolio'] }),
-  })
+// A sync is a resource now, not a request that takes minutes to return, so
+// this hook is two things instead of one: a mutation that *starts* a run, and
+// a query that follows it.
+//
+// The run id is held in component state rather than in the mutation's own
+// result so that a page which mounted while a sync was already going can
+// adopt it (see `useActiveSyncRun`) — the mutation only ever knows about runs
+// this tab started.
+export function useStartSync() {
+  return useMutation({ mutationFn: api.startSync })
 }
 
-// Polls the in-flight sync's step/percent while `enabled` — the sync POST
-// itself blocks until the whole thing finishes, so this is the only way
-// to show live progress rather than a bare spinner for however long the
-// slowest step (usually IBKR) takes.
-export function useSyncProgress(enabled: boolean) {
+// Terminal states, from `trades.db.models.SyncRunState`. `succeeded` covers a
+// run whose broker leg failed: a sync commits per successful step, so a
+// partly-successful pull is a completed run that reports what did not work in
+// `steps`. Only `failed` means the run itself did not finish.
+const FINISHED: ReadonlyArray<SyncRun['state']> = ['succeeded', 'failed']
+
+export function isSyncFinished(run: SyncRun | undefined): boolean {
+  return run !== undefined && FINISHED.includes(run.state)
+}
+
+// Follows one run to completion, then stops polling and refreshes everything
+// the sync could have changed.
+//
+// The invalidation lives here rather than on the mutation because the
+// mutation now returns as soon as the run is *queued* — invalidating there
+// would refetch the portfolio before a single event had been written. What
+// finishes a sync is this query seeing a terminal state.
+export function useSyncRun(runId: string | null) {
+  const queryClient = useQueryClient()
+  const settled = useRef<string | null>(null)
+
+  const query = useQuery({
+    queryKey: ['sync-run', runId],
+    queryFn: () => api.syncRun(runId as string),
+    enabled: runId !== null,
+    refetchInterval: (query) => (isSyncFinished(query.state.data) ? false : 700),
+  })
+
+  useEffect(() => {
+    if (!runId || !isSyncFinished(query.data) || settled.current === runId) return
+    settled.current = runId
+    queryClient.invalidateQueries({ queryKey: ['portfolio'] })
+  }, [runId, query.data, queryClient])
+
+  return query
+}
+
+// The run this account already has in flight, if any, so a reload part-way
+// through a sync picks the progress bar back up instead of showing nothing
+// for the rest of it. Asked once on mount; the polling itself is `useSyncRun`'s.
+export function useActiveSyncRun() {
   return useQuery({
-    queryKey: ['sync-progress'],
-    queryFn: api.syncProgress,
-    enabled,
-    refetchInterval: enabled ? 400 : false,
+    queryKey: ['sync-run', 'latest'],
+    queryFn: async () => {
+      const page = await api.latestSyncRun()
+      const latest = page.items[0]
+      return latest && !isSyncFinished(latest) ? latest : null
+    },
+    staleTime: Number.POSITIVE_INFINITY,
   })
 }
 
