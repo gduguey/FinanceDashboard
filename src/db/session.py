@@ -264,9 +264,21 @@ def get_db(user_id: Annotated[uuid.UUID, Depends(get_current_user_id)]) -> Itera
     a successful write — this dependency only guarantees the session is
     closed afterward, and rolled back automatically if the request raised.
 
+    **`background=False` is not the default and has to be passed.**
+    `session_scope` defaults it to `True` because every *other* caller of it
+    is a cron job, CLI entrypoint or webhook. Omitting it here silently gave
+    every HTTP request the 600-second background bound instead of the
+    15-second request bound, which is precisely the thing the per-request
+    bound exists to prevent (VISION-AUDIT T5: "a pathological query fails
+    its own request instead of holding a connection and a worker
+    indefinitely"), and it also made `allow_background_runtime` a no-op,
+    since the bound it raises was already raised. `session_scope`'s own
+    docstring said "unlike `get_db`'s per-request bound" throughout, so the
+    documentation was right and the code was not.
+
     Yields
     ------
     Session
     """
-    with session_scope(user_id) as session:
+    with session_scope(user_id, background=False) as session:
         yield session
