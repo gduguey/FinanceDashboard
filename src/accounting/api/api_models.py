@@ -81,9 +81,20 @@ class AccountingStoreResponse(BaseModel):
     thing from a `ManualTransfer`, which is not a table at all any more
     but a projection over `origin='manual'` transactions and their two
     balancing postings (see `repositories.accounts.load_manual_transfers`).
+
+    `account_ids_with_postings` is the one field here that is not an
+    entity. It is a server-derived fact — which accounts have had real
+    money land on them, and therefore have their kind and currency locked
+    — and it is deliberately *not* a field on `entities.Account`: that
+    type is a wire mirror clients also send back, and a fact only the
+    server can know has no business on a shape a client authors. It rides
+    here because the page that needs it already makes this read, so it
+    costs no round trip; the alternative was the accounts page fetching
+    every posting to derive it in the browser, which is what it did.
     """
 
     accounts: dict[str, Account]
+    account_ids_with_postings: list[str]
     categories: dict[str, Category]
     tags: dict[str, Tag]
     transfer_rules: list[TransferRule]

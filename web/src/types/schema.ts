@@ -25,9 +25,13 @@ export interface paths {
      *         (each a list). No store-wide version: optimistic concurrency is
      *         per-row (`goals`, `transfer_rules`, `category_patterns` each
      *         carry their own `version`), so there is nothing store-wide to
-     *         echo back. Opening balances, manual transfers, posting splits
-     *         and posting merges are deliberately absent — see
-     *         `AccountingStoreResponse` for why.
+     *         echo back. Plus `account_ids_with_postings`, the one derived
+     *         fact here rather than an entity: which accounts have their kind
+     *         and currency locked, as
+     *         `repositories.accounts.account_ids_with_postings` answers it and
+     *         `PUT /accounts/{account_id}` enforces it. Opening balances,
+     *         manual transfers, posting splits and posting merges are
+     *         deliberately absent — see `AccountingStoreResponse` for why.
      */
     get: operations['get_store_api_v1_accounting_store_get']
     put?: never
@@ -4464,12 +4468,24 @@ export interface components {
      *     thing from a `ManualTransfer`, which is not a table at all any more
      *     but a projection over `origin='manual'` transactions and their two
      *     balancing postings (see `repositories.accounts.load_manual_transfers`).
+     *
+     *     `account_ids_with_postings` is the one field here that is not an
+     *     entity. It is a server-derived fact — which accounts have had real
+     *     money land on them, and therefore have their kind and currency locked
+     *     — and it is deliberately *not* a field on `entities.Account`: that
+     *     type is a wire mirror clients also send back, and a fact only the
+     *     server can know has no business on a shape a client authors. It rides
+     *     here because the page that needs it already makes this read, so it
+     *     costs no round trip; the alternative was the accounts page fetching
+     *     every posting to derive it in the browser, which is what it did.
      */
     AccountingStoreResponse: {
       /** Accounts */
       accounts: {
         [key: string]: components['schemas']['Account']
       }
+      /** Account Ids With Postings */
+      account_ids_with_postings: string[]
       /** Categories */
       categories: {
         [key: string]: components['schemas']['Category']

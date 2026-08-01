@@ -14,6 +14,7 @@ import type { AccountingStore } from '@/types/accounting'
 export function emptyStore(overrides: Partial<AccountingStore> = {}): AccountingStore {
   return {
     accounts: {},
+    account_ids_with_postings: [],
     categories: {},
     tags: {},
     transfer_rules: [],

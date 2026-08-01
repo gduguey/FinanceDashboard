@@ -17,10 +17,10 @@ from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from accounting.config import AccountingConfig
-from accounting.importers.ingest import load_ledger
 from accounting.ledger.currency import DisplayCurrency, rates_into_display
 from accounting.market_data import exchange_rates
 from accounting.models import BASE_CURRENCY, CurrencyCode
+from accounting.repositories.accounts import account_has_postings
 from accounting.repositories.planning import load_goal_contributions
 from accounting.repositories.taxonomy import load_other_assets
 from accounting.taxonomy import seeded_accounts
@@ -49,15 +49,17 @@ def _account_has_postings(account_id: str, session: Session, user_id: uuid.UUID)
     deleted before any real transaction has landed on it — afterward,
     only its display name may change.
 
+    Delegates to `repositories.accounts.account_has_postings` so this
+    check and the `account_ids_with_postings` the accounts page greys its
+    rows from are one predicate rather than two. It used to materialise
+    the entire ledger as a polars frame and filter it, to answer one bit.
+
     Returns
     -------
     bool
         `True` if at least one posting in the raw ledger references this account.
     """
-    ledger = load_ledger(session, user_id)
-    if ledger.is_empty():
-        return False
-    return bool(ledger.filter(pl.col("account_id") == account_id).height > 0)
+    return account_has_postings(session, user_id, account_id)
 
 
 def _currencies_in_use(session: Session, user_id: uuid.UUID) -> set[CurrencyCode]:

@@ -3324,6 +3324,49 @@ def test_put_account_blocks_locked_field_changes_once_it_has_postings(client) ->
     assert renamed.json()["name"] == "Renamed"
 
 
+def test_store_reports_which_accounts_have_postings_and_the_lock_agrees(client) -> None:
+    """The accounts page's lock and `PUT /accounts` must answer from one predicate.
+
+    Asserted together on purpose: the field exists so the table can grey a
+    row out, and a table greying out the wrong row is a UI that contradicts
+    the 400 the user gets if they try anyway.
+    """
+    imported_id = _import_chase_checking(client)
+    untouched_id = _create_account(client, name="Rainy Day", kind="savings", institution="Ally")["account_id"]
+
+    with_postings = client.get("/api/v1/accounting/store").json()["account_ids_with_postings"]
+    assert imported_id in with_postings
+    assert untouched_id not in with_postings
+
+    locked = client.put(
+        f"/api/v1/accounting/accounts/{imported_id}",
+        json={"name": "Chase Checking", "institution": "Chase", "kind": "savings", "currency": "USD"},
+    )
+    unlocked = client.put(
+        f"/api/v1/accounting/accounts/{untouched_id}",
+        json={"name": "Rainy Day", "institution": "Ally", "kind": "checking", "currency": "USD"},
+    )
+    assert locked.status_code == 400
+    assert unlocked.status_code == 200
+
+
+def test_store_names_the_counterparty_side_of_an_import_as_having_postings(client) -> None:
+    """A placeholder counterparty carries the balancing leg, so it is locked too.
+
+    The old client-side derivation mapped every posting's `account_id`,
+    placeholder legs included, and the raw ledger has them; asserting it
+    keeps the field honest about what "has a posting" means rather than
+    quietly filtering to the accounts the table happens to show.
+    """
+    _import_chase_checking(client)
+    with_postings = client.get("/api/v1/accounting/store").json()["account_ids_with_postings"]
+    assert "uncategorized:income" in with_postings
+
+
+def test_store_reports_no_accounts_with_postings_on_a_fresh_install(client) -> None:
+    assert client.get("/api/v1/accounting/store").json()["account_ids_with_postings"] == []
+
+
 def test_post_account_accepts_an_external_investment_pulling_from_trades(client, broker_connection_id) -> None:
     response = client.post(
         "/api/v1/accounting/accounts",
