@@ -15,8 +15,6 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from accounting.api.api_models import (
-    PAGE_LIMIT_DEFAULT,
-    PAGE_LIMIT_MAX,
     DismissSuggestionRequest,
     DuplicateGroup,
     LedgerExportPage,
@@ -72,6 +70,7 @@ from accounting.utils.statement_archive import StatementArchive
 from db.current_user import get_current_user_id
 from db.money import ZERO, quantize_money
 from db.session import get_db
+from http_api.pagination import PAGE_LIMIT_DEFAULT, PAGE_LIMIT_MAX
 
 router = APIRouter()
 

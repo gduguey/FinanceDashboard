@@ -17,7 +17,7 @@ from fastapi.testclient import TestClient
 
 import db.models as dbm
 from accounting import api as accounting_api
-from accounting.api.api_models import PAGE_LIMIT_DEFAULT, PAGE_LIMIT_MAX
+from http_api.pagination import PAGE_LIMIT_DEFAULT, PAGE_LIMIT_MAX
 from accounting.config import AccountingConfig
 from db.session import get_db
 from tests.conftest import DEFAULT_USER_ID

@@ -1570,7 +1570,7 @@ wheels = [
 
 [[package]]
 name = "personalfinances"
-version = "1.7.3"
+version = "1.8.0"
 source = { editable = "." }
 dependencies = [
     { name = "alembic" },
@@ -1632,7 +1632,7 @@ requires-dist = [
     { name = "pdfplumber", specifier = ">=0.11" },
     { name = "polars", specifier = ">=1.9" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.2" },
-    { name = "pydantic", specifier = ">=2.7" },
+    { name = "pydantic", specifier = ">=2.12" },
     { name = "pydantic-settings", specifier = ">=2.2" },
     { name = "python-dateutil", specifier = ">=2.9" },
     { name = "python-multipart", marker = "extra == 'api'", specifier = ">=0.0.9" },

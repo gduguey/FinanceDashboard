@@ -1,6 +1,6 @@
 [project]
 name = "personalfinances"
-version = "1.7.3"
+version = "1.8.0"
 description = "Personal finance dashboard: replays an append-only ledger into IBKR portfolio performance, net worth, budgets, and goals."
 readme = "README.md"
 requires-python = ">=3.14"
@@ -9,7 +9,7 @@ authors = [
 ]
 dependencies = [
     "polars>=1.9",
-    "pydantic>=2.7",
+    "pydantic>=2.12",
     "pydantic-settings>=2.2",
     "requests>=2.31",
     "numpy>=1.26",
@@ -65,13 +65,13 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/trades", "src/accounting", "src/db"]
+packages = ["src/trades", "src/accounting", "src/db", "src/http_api"]
 
 [tool.mypy]
 python_version = "3.14"
 mypy_path = "src"
 explicit_package_bases = true
-packages = ["trades", "accounting", "db"]
+packages = ["trades", "accounting", "db", "http_api"]
 check_untyped_defs = true
 disallow_any_generics = true
 disallow_incomplete_defs = true

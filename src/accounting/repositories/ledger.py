@@ -87,7 +87,9 @@ def ledger_statement(
     transaction_ids
         Restrict to the postings of these transactions — how a page of
         `visible_transaction_page` becomes a frame. Matched as one array
-        parameter, so a page of any size is one bind. `None` means every
+        parameter, so a page of any size is one bind, and against
+        `Posting.transaction_id` rather than `Transaction.id` — see the
+        predicate itself for why that side is load-bearing. `None` means every
         transaction; an *empty* sequence means none, and yields no rows.
     limit, offset
         Return at most `limit` **postings**, skipping `offset` of them, in
@@ -157,7 +159,24 @@ def ledger_statement(
         .where(adb.Posting.user_id == user_id)
     )
     if transaction_ids is not None:
-        statement = statement.where(any_uuid(adb.Transaction.id, transaction_ids))
+        # Matched against the *posting* side of the join, never
+        # `Transaction.id`. The two are equated by the inner join above, so
+        # this selects an identical row set — but only this side has an index
+        # the page can be driven from (`ix_postings_transaction_id_user_id`),
+        # and putting the array on the transaction side made the plan depend
+        # on statistics that may not exist yet.
+        #
+        # What that cost, measured on a 10k-transaction ledger with no
+        # statistics: the planner estimated the outer relation at one row,
+        # costed the inner side as running once, and chose a nested loop whose
+        # inner side re-scanned every one of the user's transactions per
+        # posting — `loops=20000`, 7.8M rows discarded by the join filter,
+        # 4.26M buffer hits, 17.7 s against a 15 s `statement_timeout`. A page
+        # of 300 survived and a page of 400 did not, so the endpoint 500ed on
+        # a legal request (C6). The boundary was not a page size: it moved
+        # between runs, because what decides it is the array's effect on a
+        # cost estimate rather than the array itself.
+        statement = statement.where(any_uuid(adb.Posting.transaction_id, transaction_ids))
     if origin is not None:
         statement = statement.where(adb.Transaction.origin == origin)
     if since is not None:

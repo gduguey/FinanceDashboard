@@ -159,25 +159,42 @@ same module.
 
 ### Paged reads
 
-The two collection reads too large to answer in one response —
-`GET /postings` and `GET /ledger/export` — share one envelope, the generic
-`api_models.Page`. Its `total`, `limit` and `offset` all count
-**`window_unit`s**, a required field pinned to one `const` per endpoint:
-`"transaction"` for `GET /postings`, `"posting"` for the export. That field
-exists because the two used to be separate hand-written envelopes whose four
+Every collection read too large to answer in one response shares one
+envelope, the generic `http_api.pagination.Page`. It lives outside both
+`accounting` and `trades` because both answer with it and neither owns it —
+the two ledgers stay independent in their domains, data and write paths, which
+was never a reason for two hand-written copies of one wire format.
+
+Three reads use it today, each pinning its own `window_unit`:
+
+| read | `window_unit` | `items` are |
+|------|---------------|-------------|
+| `GET /accounting/postings` | `transaction` | every leg of every transaction on the page |
+| `GET /accounting/ledger/export` | `posting` | one raw posting each |
+| `GET /trades/ledger/export` | `event` | one ledger event each |
+
+`total`, `limit` and `offset` all count **`window_unit`s**, which is a
+required field rather than a default, pinned to one `const` per endpoint. It
+exists because these used to be separate hand-written envelopes whose four
 identically-named fields meant different things — `GET /postings` cuts its
 window by transaction and answers with every leg of every transaction in it,
 so `len(items)` there is normally larger than `limit`, and a client that
 learned the shape from one endpoint and reused it on the other computed the
 wrong number of pages with nothing in the schema to warn it.
 
-`GET /ledger/export` is the one caller that legitimately walks every page. An
-export's caller wants the whole ledger by definition, and a backup silently
-truncated at the cap is worse than several requests — so the loop in
-`web/src/lib/accountingApi.ts` stays there deliberately, and is not an instance
-of the page-until-exhausted pattern any screen should copy.
+The two `/ledger/export` routes share a suffix under different namespaces,
+which is the per-module namespace doing its job rather than a collision: they
+are two different collections, over two different ledgers, and their models
+are named for their rows (`LedgerExportPage`, `LedgerEventPage`) rather than
+for the path they share.
 
-Paging is the same arithmetic on both: advance `offset` by the `limit` the
+Both exports legitimately walk every page. An export's caller wants the whole
+ledger by definition, and a backup silently truncated at the cap is worse than
+several requests — so the page-until-exhausted loop in
+`web/src/lib/paging.ts` is deliberate there, shared by both clients, and is
+not a pattern any screen should copy.
+
+Paging is the same arithmetic on all of them: advance `offset` by the `limit` the
 **server** echoed back, never the one you asked for — a request above
 `PAGE_LIMIT_MAX` is clamped rather than rejected (see that constant), so
 striding by the requested size would step past records the server never sent

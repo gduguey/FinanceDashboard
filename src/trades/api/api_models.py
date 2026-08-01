@@ -9,6 +9,8 @@ from typing import Literal
 from pydantic import BaseModel, field_validator
 
 from db.money import Rate
+from http_api.pagination import Page
+from trades.api.entities import LedgerEvent
 from trades.config import TaxRegime, validate_iana_zone_name
 from trades.dashboard.cash_sitting import WarningLevel
 
@@ -466,3 +468,24 @@ class SyncResult(BaseModel):
     new_event_count: int
     total_event_count: int
     steps: list[SyncStep]
+
+
+class LedgerEventPage(Page[LedgerEvent, Literal["event"]]):
+    """One page of the raw event ledger, as exported, cut by event.
+
+    `items` is oldest first, in `brokers.ibkr.main._ledger_query`'s order —
+    the same order a full `load_ledger` returns — so concatenating
+    consecutive pages reconstructs the ledger exactly.
+
+    Its window unit is `event` rather than `accounting`'s `posting` or
+    `transaction` because the two ledgers are separate domains that happen
+    to share an envelope, not one collection behind two paths. `Page` exists
+    to make that sharing explicit; `window_unit` is what keeps it honest.
+
+    Named for its rows rather than for the endpoint, unlike
+    `accounting`'s `LedgerExportPage`, because two classes of that one name
+    made FastAPI disambiguate both of them by module path — every client
+    then addressed `accounting__api__api_models__LedgerExportPage`. Distinct
+    names are also the more accurate description: these are two collections,
+    not one behind two paths.
+    """

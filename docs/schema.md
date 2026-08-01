@@ -1354,11 +1354,17 @@ been checked one by one and the closed ones removed.
   replays each page through every stage. `docs/remaining-work.md` **C1** is the
   materialised projection that removes it. `GET /store` never touched the
   ledger and does not now: it returns entities only.
-- **`GET /postings` falls off a cliff between `limit=300` and `limit=400`** on a
-  10k-transaction ledger, while `PAGE_LIMIT_MAX` is 5,000 — so a legal request
-  can exceed the 15 s `statement_timeout`. Reads like a planner flip on
-  `transactions.id = ANY(:uuid[])`. That is **C6**, not a schema guarantee, but
-  it lands on this schema's shape.
+- **The page array is matched on `postings.transaction_id`, never on
+  `transactions.id`.** Both are correct — the inner join equates them — but only
+  the posting side has an index (`ix_postings_transaction_id_user_id`) for the
+  planner to drive a page from. Matching the transaction side made
+  `GET /postings` exceed the 15 s `statement_timeout` for any `limit` above
+  roughly 300 on a 10k-transaction ledger, against a `PAGE_LIMIT_MAX` of 5,000:
+  with no statistics the planner estimated the outer relation at one row and
+  chose a nested loop that re-scanned every transaction the tenant owns per
+  posting (`loops=20000`, 4.26M buffer hits, 17.7 s). That was **C6**, closed
+  in v1.8.0; it is recorded here because the fix is a fact about which index
+  this schema offers rather than about the query alone.
 
   *(The ~65,535-parameter ceiling that used to sit here is closed:
   `repositories.ledger` resolves natural keys with joins rather than `IN (...)`
