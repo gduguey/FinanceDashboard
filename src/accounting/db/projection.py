@@ -78,8 +78,8 @@ from datetime import datetime
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import ARRAY, ForeignKey, Index, Text, event, text
-from sqlalchemy.dialects.postgresql import JSONB, UUID
+from sqlalchemy import ForeignKey, Index, Text, event, text
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from accounting.db.core import SCHEMA
@@ -181,6 +181,8 @@ class ResolvedPosting(Base, Timestamped):
     subcategory_id: Mapped[str | None] = mapped_column(default=None)
     budget_id: Mapped[str | None] = mapped_column(default=None)
     tag_ids: Mapped[list[str]] = mapped_column(ARRAY(Text), default=list)
+    """The resolved tag set. Postgres' own `ARRAY`, not the generic one: the tag filter is an
+    overlap test (`tag_ids && ARRAY[...]`), and only the dialect type offers that operator."""
     description: Mapped[str] = mapped_column(default="")
     meta: Mapped[dict[str, str]] = mapped_column(JSONB, default=dict)
     pending_source: Mapped[str | None] = mapped_column(default=None)

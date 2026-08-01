@@ -20,6 +20,7 @@ from accounting.api.api_models import (
     LedgerExportPage,
     PostingMergeUpsert,
     PostingPage,
+    PostingQuery,
     PostingRow,
     TransferLinkCreate,
     TransferSuggestion,
@@ -37,11 +38,10 @@ from accounting.api.entities import (
     TransferLink,
 )
 from accounting.api.locations import created_or_replaced, location_of
-from accounting.ledger.categorization import resolved_transfer_rule_ids_by_transaction
 from accounting.ledger.duplicates import DuplicateGroup as DuplicateGroupData
 from accounting.ledger.duplicates import find_duplicate_candidates
 from accounting.ledger.pending import resolve_pending_suggestion
-from accounting.ledger.resolution import resolve_postings, resolved_postings
+from accounting.ledger.resolution import resolved_postings
 from accounting.ledger.transfers import find_unmatched_transfer_candidates, make_transfer_link
 from accounting.models import DismissedSuggestion as DomainDismissedSuggestion
 from accounting.models import PostingMerge as DomainPostingMerge
@@ -67,6 +67,13 @@ from accounting.repositories.ledger import (
     load_ledger_page,
     transaction_keys_by_posting_key,
 )
+from accounting.repositories.projection import (
+    distinct_months,
+    drain,
+    filtered_page,
+    linked_legs,
+    page_rows,
+)
 from accounting.utils.statement_archive import StatementArchive
 from db.current_user import get_current_user_id
 from db.money import ZERO, quantize_money
@@ -83,95 +90,97 @@ _LINK_MEMBERSHIP_CONSTRAINT = "uq_transfer_linked_transactions_user_transaction"
 def get_postings(
     session: Annotated[Session, Depends(get_db)],
     user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
-    limit: Annotated[int, Query(ge=1, description="How many transactions to return, newest first.")] = (
-        PAGE_LIMIT_DEFAULT
-    ),
-    offset: Annotated[int, Query(ge=0, description="How many transactions to skip.")] = 0,
+    query: Annotated[PostingQuery, Query()],
 ) -> PostingPage:
-    """Return one page of postings, resolved against the current rules and manual overrides.
+    """Return one filtered, sorted page of postings, resolved against the current rules and manual overrides.
 
-    Each row also carries `pending_source` (`"ai"`, `"pattern"`, or
-    `None`) and `pending_selected` — an automated categorizer's
-    not-yet-confirmed suggestion, and whether it's currently checked for
-    the next "validate selection" action (see `ledger.pending`) —
+    Served from `accounting.resolved_postings`, the stored output of the same
+    overlay pipeline an unpaged read would run — see
+    `accounting.db.projection` for what keeps the two equal, and
+    `repositories.projection.drain`, which this calls first so a read can
+    never serve a row a write has invalidated. Every filter below reads a
+    *resolved* value, which is why they could not be evaluated in SQL before
+    that table existed: the category a redirect or an override rewrote, the
+    account a rule repointed, the description a merge rewrote, the amount a
+    split changed.
+
+    Each row carries `pending_source` (`"ai"`, `"pattern"`, or `None`) and
+    `pending_selected` — an automated categorizer's not-yet-confirmed
+    suggestion, and whether it's currently checked for the next "validate
+    selection" action (see `ledger.pending`) —
     `resolved_by_transfer_rule_id`, naming which `TransferRule` (if any)
     resolved this posting's transaction, purely for display (see
-    `ledger.categorization.resolved_transfer_rule_ids_by_transaction`) —
-    and `manual_transfer_override_posting_id`, the same thing for a manual
-    "flag as transfer" (`ManualOverride.account_id`) instead of a rule. A
-    manual override always wins if both somehow apply to the same
-    transaction (it's applied after rules — see
-    `ledger.resolution.apply_overlays`), so
+    `ledger.categorization.resolved_transfer_rule_ids_by_transaction`) — and
+    `manual_transfer_override_posting_id`, the same thing for a manual "flag
+    as transfer" (`ManualOverride.account_id`) instead of a rule. A manual
+    override always wins if both somehow apply to the same transaction (it's
+    applied after rules — see `ledger.resolution.apply_overlays`), so
     `resolved_by_transfer_rule_id` is suppressed whenever
-    `manual_transfer_override_posting_id` is set for that transaction —
-    see `PostingRow`'s own docstring.
+    `manual_transfer_override_posting_id` is set for that transaction — see
+    `PostingRow`'s own docstring.
 
-    `limit` counts **transactions**, not postings, and the page carries
-    every leg of every transaction it covers — so `len(items)` is normally
-    larger than `limit`, and larger still where a transaction has been
-    split. `repositories.ledger.visible_transaction_page` explains why the
-    page cannot be cut at a posting instead.
+    `limit` counts **transactions**, not postings, and the page carries every
+    leg of every transaction it covers — so `len(items)` is normally larger
+    than `limit`, and larger still where a transaction has been split.
+    `repositories.projection.filtered_page` explains why the page cannot be
+    cut at a matching row instead, and how a transaction with several
+    matching rows takes its place in the order.
 
     A `limit` above `PAGE_LIMIT_MAX` is clamped rather than rejected; see
     that constant for why.
 
     Parameters
     ----------
-    limit
-        How many transactions to return, newest first. Clamped to
-        `PAGE_LIMIT_MAX`.
-    offset
-        How many transactions to skip.
+    query
+        The filter bar, the sort and the page window — see `PostingQuery`,
+        which explains why all three arrive as one model rather than as a
+        filter beside four loose parameters.
 
     Returns
     -------
     PostingPage
-        The page's postings, plus the total transaction count a client needs
-        in order to ask for the next page.
+        The page's postings, the total transaction count a client needs in
+        order to ask for the next page, and the two other counts the screen
+        shows (see `PostingPageCounts`).
     """
-    limit = min(limit, PAGE_LIMIT_MAX)
-    # Everything below the resolved frame — the raw ledger, the overrides, the
-    # rules and the accounts — comes back out of resolution rather than being
-    # read again. These four display columns are only `get_postings`'
-    # concern, but re-reading them for it meant loading the whole ledger
-    # twice per request (speed-audit S1).
-    resolution = resolve_postings(session, user_id, limit=limit, offset=offset)
-    overrides = resolution.overrides
-    resolved_by_rule = resolved_transfer_rule_ids_by_transaction(resolution.raw, resolution.rules, resolution.accounts)
-    # Newest first, matching the order the page window itself was cut in.
-    # The frame is sorted ascending because every dashboard aggregation over
-    # it wants that (a running balance reads forwards), but a *page* returned
-    # ascending inside a descending window is a trap: a client concatenating
-    # pages would get ascending runs in descending page order rather than one
-    # sorted list. Sorting here rather than in the frame keeps both callers
-    # honest.
-    rows = resolution.resolved.sort("posted_at", "posting_id", descending=[True, False]).to_dicts()
-
-    posting_id_to_transaction_id = {row["posting_id"]: row["transaction_id"] for row in rows}
-    manual_override_posting_by_transaction: dict[str, str] = {}
-    for posting_id, posting_override in overrides.items():
-        if posting_override.account_id is None:
-            continue
-        transaction_id = posting_id_to_transaction_id.get(posting_id)
-        if transaction_id is not None:
-            manual_override_posting_by_transaction[transaction_id] = posting_id
-
+    limit = min(query.limit, PAGE_LIMIT_MAX)
+    drain(session, user_id)
+    page = filtered_page(
+        session, user_id, query, sort=query.sort, descending=query.descending, limit=limit, offset=query.offset
+    )
+    rows = page_rows(session, user_id, page.transaction_ids)
+    legs = linked_legs(session, user_id, [row["linked_transaction_id"] for row in rows])
     for row in rows:
-        override = overrides.get(row["posting_id"])
-        row["pending_source"] = override.pending_source if override is not None else None
-        row["pending_selected"] = override.pending_selected if override is not None else True
-        manual_override_posting_id = manual_override_posting_by_transaction.get(row["transaction_id"])
-        row["manual_transfer_override_posting_id"] = manual_override_posting_id
-        row["resolved_by_transfer_rule_id"] = (
-            None if manual_override_posting_id is not None else resolved_by_rule.get(row["transaction_id"])
-        )
+        row["linked_leg"] = legs.get(row["linked_transaction_id"]) if row["linked_transaction_id"] else None
     return PostingPage(
         items=[PostingRow(**row) for row in rows],
         window_unit="transaction",
-        total=resolution.total,
+        total=page.counts.matched_transactions,
         limit=limit,
-        offset=offset,
+        offset=query.offset,
+        counts=page.counts,
     )
+
+
+@router.get("/postings/months")
+def get_posting_months(
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
+) -> list[str]:
+    """Every `YYYY-MM` this user has a posting in, newest first — the month picker's options.
+
+    Bounded by construction: one row per month a user has ever transacted in,
+    which is tens of entries for a decade of history. It was previously a
+    `Set` built over every posting on the client (`web/src/lib/months.ts`),
+    which is only cheap while something else is already holding the whole
+    ledger in memory — and nothing is, now.
+
+    Returns
+    -------
+    list[str]
+    """
+    drain(session, user_id)
+    return distinct_months(session, user_id)
 
 
 @router.get("/ledger/export")

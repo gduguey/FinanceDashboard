@@ -233,9 +233,15 @@ def test_both_paged_reads_share_one_envelope_and_each_names_its_own_window_unit(
 
     window_fields = {"window_unit", "total", "limit", "offset"}
     assert window_fields <= set(postings_page["properties"])
-    assert set(postings_page["properties"]) == set(export_page["properties"])
     assert window_fields <= set(postings_page["required"])
     assert window_fields <= set(export_page["required"])
+    # The envelope itself is identical; what differs is named. `PostingPage`
+    # adds `counts`, the two other numbers the transactions screen shows (see
+    # `api.api_models.PostingPageCounts`) — an endpoint-specific field, not a
+    # fifth window field, which is the distinction this assertion exists to
+    # keep visible.
+    assert set(export_page["properties"]) == window_fields | {"items"}
+    assert set(postings_page["properties"]) - set(export_page["properties"]) == {"counts"}
 
     assert postings_page["properties"]["window_unit"]["const"] == "transaction"
     assert export_page["properties"]["window_unit"]["const"] == "posting"

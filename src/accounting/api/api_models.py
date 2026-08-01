@@ -50,7 +50,7 @@ from accounting.models import (
     TransferLinkSource,
 )
 from db.money import ZERO, Money, Rate
-from http_api.pagination import Page
+from http_api.pagination import PAGE_LIMIT_DEFAULT, Page
 
 
 class AccountingStoreResponse(BaseModel):
@@ -658,6 +658,145 @@ class RebuildResult(BaseModel):
     total_posting_count: int
 
 
+UNCATEGORIZED = "__uncategorized__"
+"""The category filter's entry for "no category at all", which is not a category id.
+
+Part of the wire contract, not an implementation detail of either side. A
+multi-select filter arrives as a list of query parameters and a list cannot
+hold a null, so "match the rows with no category" needs a value — and the
+alternative, a separate `include_uncategorized` boolean beside every
+multi-select, would be four more parameters saying the same thing four times.
+"""
+
+NO_SUBCATEGORY = "__no_subcategory__"
+"""The subcategory filter's entry for "no subcategory" — see `UNCATEGORIZED`."""
+
+CONFIRMED = "__confirmed__"
+"""The pending filter's entry for "not a suggestion", i.e. a null `pending_source` — see `UNCATEGORIZED`."""
+
+TransferFlag = Literal["rule", "excluded", "manual", "none"]
+"""How a transaction's transfer status currently reads, across every mechanism that can set one.
+
+Not mutually exclusive except pairwise: a posting is either mid-transfer via
+a rule or manually, or a plain non-transfer, while `excluded` is a separate
+historical fact that can be true alongside either.
+"""
+
+PostingSortField = Literal[
+    "posted_at", "account_id", "description", "amount", "category_id", "subcategory_id", "tag_ids"
+]
+"""Which resolved column `GET /postings` orders by — one per sortable column on the transactions table."""
+
+
+class PostingFilters(BaseModel):
+    """The transactions screen's filter bar, as the server evaluates it.
+
+    Every predicate here reads a *resolved* value, which is why this could
+    not exist before the projection did: the category a redirect or an
+    override rewrote, the account a rule repointed, the description a merge
+    rewrote, the amount a split changed. See
+    `accounting.db.projection.ResolvedPosting`.
+
+    Used in two places, and deliberately the same model in both: as query
+    parameters on `GET /postings`, and in the body of the filter-shaped bulk
+    actions (`POST /postings/validate-pending`,
+    `POST /pattern-suggest-category/bulk`). A bulk action that took its own
+    filter shape could disagree with the list the user is looking at, which
+    is the whole failure this endpoint exists to prevent.
+
+    Each multi-select carries its own `_exclude` flag rather than a signed
+    value list, matching the filter bar's own controls: an empty list means
+    "no restriction", and `_exclude` inverts whatever the list selects.
+    """
+
+    search: str = Field(default="", description="Case-insensitive substring of the resolved description.")
+    account: str | None = Field(default=None, description="One account's natural key.")
+    account_exclude: bool = False
+    categories: list[str] = Field(
+        default_factory=list, description=f"Category natural keys; `{UNCATEGORIZED}` matches rows with none."
+    )
+    categories_exclude: bool = False
+    subcategories: list[str] = Field(
+        default_factory=list, description=f"Subcategory natural keys; `{NO_SUBCATEGORY}` matches rows with none."
+    )
+    subcategories_exclude: bool = False
+    tags: list[str] = Field(default_factory=list, description="Tag natural keys; a row matches if it carries any.")
+    tags_exclude: bool = False
+    month: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}$", description="A single `YYYY-MM`.")
+    start: date | None = Field(default=None, description="First day to include, inclusive.")
+    end: date | None = Field(default=None, description="Last day to include, inclusive.")
+    pending: list[str] = Field(
+        default_factory=list,
+        description=f"`ai`, `pattern`, or `{CONFIRMED}` for a row carrying no unvalidated suggestion.",
+    )
+    pending_exclude: bool = False
+    transfer_flags: list[TransferFlag] = Field(default_factory=list)
+    transfer_flags_exclude: bool = False
+    income_expense: Literal["income", "expense"] | None = Field(
+        default=None, description="Restrict to real income or real expense legs, by sign."
+    )
+    categorized: Literal["categorized", "uncategorized"] | None = None
+    needs_categorizing: bool = Field(
+        default=False,
+        description=(
+            "The 'Needs categorizing' tab: a real income/expense leg that is uncategorized, still carries an "
+            "unvalidated suggestion, or sits under a parent category whose subcategory has not been picked."
+        ),
+    )
+
+
+class PostingQuery(PostingFilters):
+    """`GET /postings`' whole query string: the filter bar, plus the sort and the page window.
+
+    One model rather than a model beside four loose parameters, and that is
+    forced rather than preferred: FastAPI expands a Pydantic
+    query-parameter model into its fields **only when it is the sole query
+    parameter of the endpoint**. Declare one other — a `limit`, or even a
+    keyword-only marker in the signature — and it silently stops expanding,
+    takes the model as a scalar query parameter named after the argument,
+    and answers 422 to every request with the model's own parameters absent
+    from the schema.
+
+    Inheriting rather than composing keeps the bulk actions honest: they
+    take `PostingFilters` itself, so they cannot be handed a sort or a page
+    window, and cannot drift from the filter this page was built with.
+    """
+
+    sort: PostingSortField = Field(default="posted_at", description="Which resolved column to order by.")
+    descending: bool = Field(default=True, description="Order high-to-low. Nulls sort last either way.")
+    limit: int = Field(
+        default=PAGE_LIMIT_DEFAULT, ge=1, description="How many transactions to return. Clamped to PAGE_LIMIT_MAX."
+    )
+    offset: int = Field(default=0, ge=0, description="How many transactions to skip.")
+
+
+class PostingPageCounts(BaseModel):
+    """The two counts the transactions screen shows, which are two different numbers.
+
+    `total` on the page envelope counts `window_unit`s — transactions, since
+    that is what a page is cut by. The figure beside the table counts
+    *rows*, because that is what the table lists: a split transaction
+    contributes one transaction and several rows.
+
+    The screen used to derive the row count client-side and label it
+    "transactions", which was wrong in exactly the case a split makes the two
+    differ. Both are returned rather than one being silently redefined — the
+    same choice `http_api.pagination.Page.window_unit` exists to make
+    explicit.
+    """
+
+    matched_transactions: int
+    """How many transactions the filter matches — the same number as the page's `total`."""
+    matched_postings: int
+    """How many rows the filter matches, across every page."""
+    needs_categorizing: int
+    """How many matched rows still want a category, ignoring the `needs_categorizing` filter itself.
+
+    The "Needs categorizing" tab's badge, and the size of the set the bulk
+    categorizers would act on. Deliberately computed with that one predicate
+    lifted, so the badge reads the same whichever tab is open."""
+
+
 class PostingRow(Posting):
     """One posting as displayed on the Transactions page — a `Posting` plus its current resolution state.
 
@@ -690,19 +829,66 @@ class PostingRow(Posting):
     is_linked_transfer: bool = False
     linked_transaction_id: str | None = None
     transfer_link_source: TransferLinkSource | None = None
+    is_real_income_expense: bool = False
+    """Whether this leg is real income or a real expense, rather than one side of an internal transfer.
+
+    Mirrors `dashboard.income_statement.real_income_expense_legs`: not on a
+    virtual placeholder account, its transaction has a leg that is, and the
+    transaction is not a confirmed transfer link. On the wire because the
+    transactions screen reads it per row — for the "needs categorizing"
+    state, the income/expense filter, and whether a rule-repointed row shows
+    a transfer badge or a "via rule" tag — and used to derive it by scanning
+    the whole ledger client-side."""
+    is_excluded_from_rule: bool = False
+    """Whether this transaction is opted out of at least one transfer rule.
+
+    A historical fact rather than a transfer classification: it can be true
+    alongside a row that is currently a transfer and one that is not, which
+    is why it is its own filter option rather than folded into either."""
+    linked_leg: LinkedLeg | None = None
+    """The partner transaction's real leg, when this row is a confirmed transfer.
+
+    The one thing the transfer badge needs that is not on this row or its
+    siblings, and the reason it is joined at read time rather than stored:
+    denormalising the partner onto this row would mean every change to the
+    partner had to find and rewrite it, which is a second staleness axis on
+    top of the one the projection already has."""
+
+
+class LinkedLeg(BaseModel):
+    """The other side of a confirmed transfer, as its badge and detail popup need it.
+
+    Deliberately not a whole `PostingRow`: the partner is not on the page and
+    is not rendered as a row, so returning one would invite a client to treat
+    it as if it were.
+    """
+
+    transaction_id: str
+    account_id: str
+    description: str
+    posted_at: datetime
+    amount: Money
+    currency: CurrencyCode
 
 
 class PostingPage(Page[PostingRow, Literal["transaction"]]):
-    """One page of resolved postings, cut by transaction.
+    """One page of resolved postings, cut by transaction, ordered by whatever the client asked to sort on.
 
-    `items` holds every leg of every transaction on the page, ordered by
-    `posted_at` descending then posting id — the same order the window is cut
-    in, so concatenating consecutive pages yields one correctly sorted list
-    rather than ascending runs in descending order. A split transaction
+    `items` holds every leg of every transaction on the page — including the
+    placeholder legs the table itself never renders, because the transfer
+    badge and "mark as transfer" both read them. A split transaction
     contributes more rows than legs it was imported with. See
-    `repositories.ledger.visible_transaction_page` for why the cut is by
-    transaction rather than by posting.
+    `repositories.projection.filtered_page` for why the cut is by transaction
+    rather than by matching row, and how a transaction with several matching
+    rows takes its place in the order.
+
+    `total` counts transactions, as `window_unit` says. `counts` carries the
+    two other numbers the screen shows, which are genuinely different
+    numbers — see `PostingPageCounts`.
     """
+
+    counts: PostingPageCounts
+    """Everything the filter matches, ignoring this page's window."""
 
 
 class LedgerExportPage(Page[Posting, Literal["posting"]]):
