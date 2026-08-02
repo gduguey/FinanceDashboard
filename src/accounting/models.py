@@ -599,7 +599,12 @@ class GoalAutomation(BaseModel):
       date is derived from those. For `frequency="monthly"`, the day of
       month is `start_date`'s own day, capped at 28 so every month
       actually has that day rather than silently skipping February on a
-      day-30 schedule. `mode`/`value`/`currency` say how much it wants.
+      day-30 schedule. `mode`/`value`/`currency` say how much it wants —
+      and `currency` may only ever be `BASE_CURRENCY`, because the
+      unallocated pool it is funded from is denominated in it and the
+      contribution it writes is labelled with it
+      (`api_models.BaseCurrencyOnly` refuses anything else at the write
+      boundary; item A6).
     - `direction="withdrawal"` carries none of them. The withdrawal
       automation (`ledger.goal_automations.run_withdrawal_automation`) is
       event-driven — triggered whenever unallocated money dips below zero

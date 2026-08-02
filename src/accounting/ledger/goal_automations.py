@@ -83,6 +83,19 @@ def next_recurring_occurrence(automation: GoalAutomation, as_of: date) -> date |
 def run_recurring_additions(automations: list[GoalAutomation], unallocated: float) -> list[tuple[str, float]]:
     """Allocate `unallocated` money across `automations` in priority order, funding each until it runs out.
 
+    **Everything here is in `models.BASE_CURRENCY`** — the pool, every
+    `value` read off an automation, and every amount returned. That is
+    not a convention this function invents: unallocated money is a
+    comparison basis rather than a display figure, and
+    `api.routers.goals._unallocated_basis` computes it in the base
+    currency for exactly that reason. Saying so in the signature is item
+    A6: the currency used to be implicit, so a `fixed_amount` automation
+    denominated in EUR had its `value` subtracted from the pool as though
+    it were USD, and the resulting contribution was stored labelled EUR
+    while holding a USD-derived amount. `api_models.GoalAutomationCreate`
+    now refuses a non-base currency, so the assumption below is enforced
+    at the write boundary rather than assumed here.
+
     Each automation's own `value`/`mode` determines how much it wants:
     `fixed_amount` wants exactly `value`; `percent_of_unallocated` wants
     `value`% of `unallocated` as it stood *before this run started* (not
@@ -99,18 +112,19 @@ def run_recurring_additions(automations: list[GoalAutomation], unallocated: floa
     automations
         Every contribution automation due to run, in any order — sorted
         here by `priority` (lowest first). A `direction="withdrawal"`
-        entry has no schedule to fund and is skipped.
+        entry has no schedule to fund and is skipped. Each one's `value`
+        is read as `BASE_CURRENCY`.
     unallocated
-        The unallocated balance available before this run.
+        The unallocated balance available before this run, in `BASE_CURRENCY`.
 
     Returns
     -------
     list[tuple[str, float]]
-        `(automation_id, amount)` pairs, in funding order — only for
-        automations that actually received a nonzero amount. Keyed by the
-        automation rather than its goal because a goal may legitimately have
-        several contribution schedules funding it, so `goal_id` does not
-        identify which schedule was funded.
+        `(automation_id, amount)` pairs in `BASE_CURRENCY`, in funding
+        order — only for automations that actually received a nonzero
+        amount. Keyed by the automation rather than its goal because a
+        goal may legitimately have several contribution schedules funding
+        it, so `goal_id` does not identify which schedule was funded.
     """
     remaining = unallocated
     funded: list[tuple[str, float]] = []

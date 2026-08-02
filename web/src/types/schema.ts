@@ -122,6 +122,11 @@ export interface paths {
      *     (`Budget`, `CategoryPattern` both require a `category_id`) — see
      *     `taxonomy.uncategorize_category_ids`.
      *
+     *     "The deleted id(s)" means `_categories_leaving_the_tree`, not the
+     *     ones the request names. Deleting a category's last real subcategory
+     *     also removes the parent's now-pointless "Other" catch-all, and that
+     *     row has references of its own.
+     *
      *     Answers 200 with a body rather than the 204 the other row deletes answer:
      *     this delete has effects beyond the row it names — it cascades to
      *     subcategories, re-derives the survivors' "Other" catch-alls, and
@@ -241,6 +246,10 @@ export interface paths {
      *     only actually call `DELETE /categories/{category_id}` once the user
      *     accepts.
      *
+     *     Counts over `_categories_leaving_the_tree`, the same set the delete
+     *     itself acts on, so the number in the confirmation dialog is the
+     *     number the delete will report having uncategorized.
+     *
      *     Returns
      *     -------
      *     CategoryDeletePreviewResponse
@@ -331,6 +340,12 @@ export interface paths {
      *     is discarded (see `taxonomy.remap_category_ids`) — call
      *     `GET /categories/{category_id}/rename-preview` first to warn about
      *     that before committing to the rename.
+     *
+     *     A merge can also *add* a category: reparenting the merged-away
+     *     category's first real subcategory under the target makes
+     *     `taxonomy.normalize_categories` mint the target's own "Other"
+     *     catch-all. Those rows are written first, additively, because every
+     *     step after them resolves a natural key that has to already exist.
      *
      *     Returns
      *     -------
@@ -495,6 +510,12 @@ export interface paths {
      *     deleted, so a foreign key never briefly points at a row about to
      *     disappear.
      *
+     *     One commit, at the end, covering both writes. This used to be two —
+     *     `remap_tag_ids` committed the repointed join rows itself — so a
+     *     concurrent read could land on a real, half-applied state where the
+     *     postings had already moved and the merged-away tag still existed
+     *     (item D4).
+     *
      *     Returns
      *     -------
      *     TagRenameResponse
@@ -551,6 +572,10 @@ export interface paths {
      *     No version check — see `repositories.interpretation.delete_transfer_rule`'s own
      *     docstring for why deleting an already-gone rule is a plain 404, not a
      *     409: there's nothing left to conflict with.
+     *
+     *     One commit, at the end. This used to be two — the removal, then
+     *     reconciliation's own — so a read could land on a rule that was gone
+     *     while links it no longer implies were still stored (item D4).
      *
      *
      *     Raises
@@ -3227,6 +3252,14 @@ export interface paths {
     /**
      * Post Run Recurring Additions
      * @description Run every contribution automation whose most recent scheduled occurrence hasn't already run.
+     *
+     *     Every figure on this path is in `models.BASE_CURRENCY`: the pool
+     *     `_unallocated_basis` computes, the `value` each automation names, the
+     *     amounts `run_recurring_additions` returns, and therefore the
+     *     `currency` each written contribution carries. A contribution
+     *     automation can only be created or edited in the base currency (see
+     *     `api_models.BaseCurrencyOnly`), so that chain has no conversion in it
+     *     and no place for one to be forgotten — item A6.
      *
      *     Idempotent by construction: each automation's occurrence writes a
      *     contribution under a deterministic id
