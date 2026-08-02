@@ -33,7 +33,7 @@ export function ClampedRateNote({ start, displayCurrency }: { start: string; dis
       <Info className="mt-0.5 size-3.5 shrink-0" />
       <span>
         Amounts dated before {formatDate(coverage.earliest)} are converted at the oldest exchange rate on file. The rate
-        history covers two years, so anything older uses that rate rather than its own day's.
+        history covers two years, so anything older uses that rate rather than its own day’s.
       </span>
     </p>
   )
