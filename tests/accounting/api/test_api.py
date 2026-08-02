@@ -2336,7 +2336,7 @@ def test_patch_transfer_rule_updates_excluded_transaction_ids(client) -> None:
 
 def test_creating_an_unrelated_rule_does_not_reset_another_rules_version(client) -> None:
     """`POST /transfer-rules` writes through `repositories.interpretation.upsert_transfer_rule`, which
-    reuses `upsert_transfer_rules`' `INSERT ... ON CONFLICT (id) DO UPDATE` — if that upsert ever
+    reuses `upsert_transfer_rules`' `INSERT ... ON CONFLICT (user_id, natural_key) DO UPDATE` — if that upsert ever
     reset `version` back to its column default, a client holding an already-bumped version for some
     *other*, untouched rule would get a spurious 409 on its very next `PATCH`. Omitting `version` from
     that statement's `SET` clause exists specifically to prevent that.

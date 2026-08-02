@@ -1455,10 +1455,11 @@ def _overrides_from_rows(
 def _insert_overrides(overrides: dict[str, ManualOverride], session: Session, user_id: uuid.UUID) -> None:
     """Insert the `PostingOverride`/`PostingOverrideTag`/pending-`Suggestion` rows for `overrides`, then commit.
 
-    The whole insert half of
-    `save_overrides_for_postings`, which differ only in how much they delete
-    first — this was duplicated verbatim between them, and every natural key
-    it resolves would otherwise be looked up twice.
+    The whole insert half of `save_overrides_for_postings`, split out from it
+    so that the natural keys it resolves are looked up once rather than once
+    per collection. It had a second caller, the whole-table `save_overrides`,
+    which differed only in deleting every posting's override first; that one
+    was deleted with item G9.
 
     Writes a `PostingOverride` row only when at least one actual correction
     field is set, and a pending `Suggestion` row only when `pending_source`

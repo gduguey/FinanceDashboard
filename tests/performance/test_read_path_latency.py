@@ -213,7 +213,7 @@ measures 4.8x — where 3.5 rejects it. That break is caught by two row-count
 assertions as well, deterministically; this is the backstop.
 
 One constant rather than five, even though the five healthy figures span
-1.38x to 2.21x. Five constants whose justifications differed only in the
+1.38x to 2.23x. Five constants whose justifications differed only in the
 number would be five things to keep current, and the loosest of them would
 still be this one.
 """
@@ -257,8 +257,13 @@ degrades gradually rather than stepping.
 MAX_POSTINGS_PAGE_SECONDS = 1.0
 """Wall-clock ceiling for one 200-transaction page of `GET /postings` over a 10k-transaction ledger.
 
-Worst observed across six CI runs: **87 ms**, in a band of 61-87. One
-second is 11x that.
+Worst observed across six CI runs: **92 ms**, in a band of 61-92. One
+second is 10.9x that.
+
+Two cases time this same request — the scaling assertion and the wall-clock
+one — so the band spans both rather than only this test's own six figures,
+whose worst was 87 ms. Quoting the lower of the two would understate the
+number this bound has to clear.
 
 Three seconds before item C8, which was roughly 45x and defensible only
 because nobody had the CI numbers. Every wall clock in this module now sits
@@ -929,7 +934,7 @@ exactly the ledger this saving matters on.
 
 Worst observed across the two CI runs that have carried this case:
 **1,419 ms**, against 1,070 ms on the faster. Eight seconds is 5.6x that and
-4.4x the local 1,830 ms, keeping more headroom than the other wall clocks
+4.1x the local 1,743-1,830 ms, keeping more headroom than the other wall clocks
 until this measurement has a distribution of its own.
 
 Deliberately a wall clock and not a ratio: the work is proportional to the
@@ -1004,18 +1009,47 @@ def _file_postings_under_a_category(engine: Engine, tenant: uuid.UUID, natural_k
         ).scalar_one()
 
 
+def _unfile_every_posting_and_drop_the_categories(engine: Engine, tenant: uuid.UUID) -> None:
+    """Put the tenant back exactly as `conftest` seeded it — no categories, no raw `category_id`, nothing retired.
+
+    The case below is the only one in this module that changes the *shape* of
+    the seed rather than adding an overlay row, so it is the only one that has
+    to undo itself. Position in the file is not a safeguard: `-k`, `-p xdist`
+    or a plugin that shuffles collection would run it first, and every bound
+    after it would then be measured against a ledger carrying categories and a
+    redirect map — a different seed from the one the bounds were derived from,
+    which is the exact failure `test_the_seed_is_the_shape_the_gate_assumes`
+    exists to make impossible.
+
+    Every category goes, not only the two this case created: the merge route
+    calls `taxonomy.seeded_categories`, which seeds the whole default tree on
+    first use, so leaving "only what we added" behind would still not be the
+    seeded state. Nothing else references them by then — the postings are
+    unfiled first, and this tenant has no budgets, patterns or splits.
+    """
+    with engine.begin() as connection:
+        connection.execute(text("SELECT set_config('app.current_user_id', :value, false)"), {"value": str(tenant)})
+        connection.execute(
+            text("UPDATE accounting.postings SET category_id = NULL WHERE user_id = :tenant"),
+            {"tenant": tenant},
+        )
+        connection.execute(text("DELETE FROM accounting.categories WHERE user_id = :tenant"), {"tenant": tenant})
+
+
 def test_a_category_merge_recomputes_only_the_postings_filed_under_it(
     request_as: Callable[[str], TestClient], app_runtime_engine: Engine, tenants: dict[str, uuid.UUID]
 ) -> None:
     """Item C9, at the volume it was costed at: a merge, then the next page.
 
-    Last in this module because it is the one case that changes the seed —
-    it files a tenth of the big tenant's postings under a category. That
-    ordering is not what makes it correct, though: the assertion below checks
-    its own precondition, so a reorder that ran it against an unstamped ledger
-    fails loudly instead of timing an empty recompute and passing. Same
-    reasoning as `conftest._analyze_as_owner` — a setup step that reports
-    success whether or not it did anything is how B5 survived for months.
+    The one case here that changes the *shape* of the shared seed, so it is
+    bracketed on both sides. It asserts its own precondition, because a setup
+    step that reports success whether or not it did anything is how B5
+    survived for months (see `conftest._analyze_as_owner`); and it restores
+    the seed in a `finally`, because the alternative is every bound in this
+    module depending on this function staying last in the file.
+
+    Last in the file anyway, which is belt and braces rather than the
+    mechanism.
     """
     client = request_as("big")
     categorized = _file_postings_under_a_category(app_runtime_engine, tenants["big"], _MERGED_AWAY_CATEGORY)
@@ -1028,21 +1062,30 @@ def test_a_category_merge_recomputes_only_the_postings_filed_under_it(
         f"{categorized} of {BIG_TENANT_TRANSACTIONS} transactions carry it, which is enough of the ledger that a "
         f"whole-ledger invalidation would be indistinguishable from the narrow one"
     )
-    # The stamp itself dirtied those transactions, through `postings`' own
-    # trigger. Drained here so the measurement below is the merge's cost and
-    # not this fixture's.
-    assert client.get(_POSTINGS, params={"limit": 1}).status_code == 200
+    try:
+        # The stamp itself dirtied those transactions, through `postings`' own
+        # trigger. Drained here so the measurement below is the merge's cost
+        # and not this fixture's.
+        assert client.get(_POSTINGS, params={"limit": 1}).status_code == 200
 
-    merged = client.post(f"/api/v1/accounting/categories/{_MERGED_AWAY_CATEGORY}/rename", json={"name": "Perf Target"})
-    assert merged.status_code == 200, merged.text
-    assert merged.json()["merged"] is True, (
-        "the rename did not merge, so no category was retired and nothing recomputed"
-    )
+        merged = client.post(
+            f"/api/v1/accounting/categories/{_MERGED_AWAY_CATEGORY}/rename", json={"name": "Perf Target"}
+        )
+        assert merged.status_code == 200, merged.text
+        assert merged.json()["merged"] is True, (
+            "the rename did not merge, so no category was retired and nothing recomputed"
+        )
 
-    started = time.perf_counter()
-    assert client.get(_POSTINGS, params={"limit": _PAGE_SIZE}).status_code == 200
-    elapsed = time.perf_counter() - started
-    print(f"  category merge + page -> {elapsed * 1000:.0f} ms")  # noqa: T201
+        started = time.perf_counter()
+        assert client.get(_POSTINGS, params={"limit": _PAGE_SIZE}).status_code == 200
+        elapsed = time.perf_counter() - started
+        print(f"  category merge + page -> {elapsed * 1000:.0f} ms")  # noqa: T201
+    finally:
+        _unfile_every_posting_and_drop_the_categories(app_runtime_engine, tenants["big"])
+        # Those two statements dirtied the same transactions again. Drained
+        # here rather than left for whichever case runs next, which would
+        # otherwise time a recompute it did not cause.
+        assert client.get(_POSTINGS, params={"limit": 1}).status_code == 200
 
     assert elapsed < MAX_CATEGORY_MERGE_SECONDS, (
         f"the page after a category merge took {elapsed:.2f} s over a {BIG_TENANT_TRANSACTIONS}-transaction "
