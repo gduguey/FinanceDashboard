@@ -367,8 +367,8 @@ def delete_category(
         return None if field_id in ids_to_delete else field_id
 
     # Only the overrides that actually reference a deleted category/subcategory get touched — every
-    # other posting's override is left alone, unlike the old `load_overrides`/`save_overrides(whole
-    # dict)` pair this replaced, which rewrote the entire table on every category delete.
+    # other posting's override is left alone, unlike the whole-table writer this
+    # replaced, which rewrote every posting's override on every category delete.
     overrides = load_overrides(session, user_id)
     changed_overrides = {
         posting_id: override.model_copy(

@@ -19,7 +19,7 @@ from accounting.ledger.frame import LEDGER_FRAME_SCHEMA
 from accounting.ledger.transfers import reconcile_and_persist_rule_links
 from accounting.models import Account, Posting, TransferRule
 from accounting.repositories.accounts import replace_accounts
-from accounting.repositories.interpretation import load_transfer_links, replace_transfer_rules
+from accounting.repositories.interpretation import load_transfer_links, upsert_transfer_rules
 from accounting.taxonomy import seeded_accounts
 
 if TYPE_CHECKING:
@@ -92,7 +92,7 @@ def test_reconcile_and_persist_rule_links_persists_a_new_link(db_session: Sessio
         account_id="chase:checking:9579",
         counterparty_account_id="chase:credit_card:8235",
     )
-    replace_transfer_rules(db_session, test_user_id, [rule])
+    upsert_transfer_rules(db_session, test_user_id, [rule])
     db_session.commit()
 
     raw = load_ledger(db_session, user_id=test_user_id)
@@ -111,7 +111,7 @@ def test_reconcile_and_persist_rule_links_is_idempotent(db_session: Session, tes
         account_id="chase:checking:9579",
         counterparty_account_id="chase:credit_card:8235",
     )
-    replace_transfer_rules(db_session, test_user_id, [rule])
+    upsert_transfer_rules(db_session, test_user_id, [rule])
     db_session.commit()
     raw = load_ledger(db_session, user_id=test_user_id)
 

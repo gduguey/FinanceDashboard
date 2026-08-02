@@ -118,7 +118,7 @@ class CategorizationRule(Base, Timestamped):
     """Bumped by `db.base.check_and_bump_row_version` on every `PATCH /transfer-rules/{rule_id}`
     and `PATCH /category-patterns/{pattern_id}` — see that function's own docstring. Never touched
     by the repository's own upsert path for this table (see
-    `accounting.repositories.interpretation.replace_transfer_rules`/`replace_category_patterns`),
+    `accounting.repositories.interpretation.upsert_transfer_rules`/`replace_category_patterns`),
     so an unrelated create/reorder elsewhere never invalidates a version a client already has in
     hand."""
 

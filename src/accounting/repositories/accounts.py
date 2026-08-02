@@ -386,43 +386,6 @@ def load_opening_balances(session: Session, user_id: uuid.UUID) -> dict[str, Ope
     }
 
 
-def replace_opening_balances(session: Session, user_id: uuid.UUID, opening_balances: Iterable[OpeningBalance]) -> None:
-    """Replace this user's whole set of opening balances, touching no other table.
-
-    Wipe-and-reinsert: nothing foreign-keys into `opening_balances`, so each
-    surviving row coming back with a *fresh* id costs nothing — an opening
-    balance is only ever addressed through the account it belongs to (see
-    `upsert_opening_balance`/`remove_opening_balance`), never by an id
-    anything else holds. The accounts these reference must already exist —
-    call `replace_accounts` first.
-
-    Parameters
-    ----------
-    session
-        An open database session; the caller commits.
-    user_id
-        Whose opening balances these are.
-    opening_balances
-        The complete desired set.
-    """
-    opening_balances = list(opening_balances)
-    session.query(adb.OpeningBalance).filter_by(user_id=user_id).delete()
-    session.flush()
-    account_ids = ids_by_natural_key(
-        session, adb.Account, user_id, [opening_balance.account_id for opening_balance in opening_balances]
-    )
-    session.add_all(
-        adb.OpeningBalance(
-            user_id=user_id,
-            account_id=account_ids[opening_balance.account_id],
-            amount=opening_balance.amount,
-            as_of_date=opening_balance.as_of_date,
-        )
-        for opening_balance in opening_balances
-    )
-    session.flush()
-
-
 def upsert_opening_balance(opening_balance: OpeningBalance, session: Session, user_id: uuid.UUID) -> None:
     """Insert-or-update one account's opening balance, touching no other. Scoped like `planning.upsert_budget`.
 

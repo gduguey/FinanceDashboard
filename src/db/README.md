@@ -251,24 +251,29 @@ reinserted row comes back with a *new* `id` — ids are minted, not
 recomputed — so any foreign key held elsewhere would be left pointing at a
 row that no longer exists. (That is why `accounts`/`categories`/`tags`, which
 the ledger does reference, use upsert-and-prune instead.)
-This is the technique for **eight** tables, each behind a `replace_*`
+This is the technique for **five** tables, each behind a `replace_*`
 function that runs only when a request genuinely submits that whole list:
 
-- `repositories.accounts.replace_opening_balances`: `opening_balances`.
 - `repositories.taxonomy.replace_other_assets` /
   `replace_simulator_scenarios`: `other_assets`, `simulator_scenarios`.
 - `repositories.planning.replace_budgets`: `budgets`.
-- `repositories.interpretation.replace_posting_splits` /
-  `replace_posting_merges`: `posting_splits`, `posting_split_legs`,
-  `posting_merges`, `posting_merge_duplicates`.
+- `repositories.interpretation.replace_posting_splits`: `posting_splits`,
+  `posting_split_legs`.
 
-Two of those pairs are parent-and-child (`posting_split_legs` →
-`posting_splits`, `posting_merge_duplicates` → `posting_merges`), which
-works because parent and child are rewritten in the same transaction, the
-parents flushed first so each child reads its parent's brand-new id
-straight off the flushed row.
+Three more used to be on that list — `replace_opening_balances`,
+`replace_posting_merges` and a whole-table `save_overrides` — and were
+deleted with item G9: none had a caller in `src/`, and
+`opening_balances`, `posting_merges`/`posting_merge_duplicates` and
+`posting_overrides` are written only by the scoped
+`upsert_opening_balance`, `upsert_posting_merge` and
+`save_overrides_for_postings`.
 
-A ninth, `repositories.planning.replace_goal_automations`, is the same
+One of those is parent-and-child (`posting_split_legs` →
+`posting_splits`), which works because parent and child are rewritten in the
+same transaction, the parent flushed first so each child reads its parent's
+brand-new id straight off the flushed row.
+
+A sixth, `repositories.planning.replace_goal_automations`, is the same
 shape but **scoped**: it deletes only the rows for one `direction`, so
 rewriting the withdrawal order cannot touch the recurring additions
 sharing the table.
@@ -304,9 +309,11 @@ One table in the interpretation set is neither: `categorization_rules`
 carries a `version` column that per-row optimistic concurrency depends on,
 so its rows are upserted by raw
 `INSERT ... ON CONFLICT (user_id, natural_key) DO UPDATE` whose `SET` clause
-omits `version`, then pruned — scoped to one `effect`, so rewriting the
-transfer rules cannot delete a category pattern sharing the table (see
-`repositories.interpretation.replace_transfer_rules`). A dismissed
+omits `version`, then pruned — scoped to one `effect`. Only
+`replace_category_patterns` prunes: `upsert_transfer_rules` is purely
+additive, its `prune=True` branch having been unreachable from any request
+and deleted with item G9, so the scoping is what stops a category-pattern
+rewrite deleting a transfer rule sharing the table. A dismissed
 `suggestions` row is only ever upserted one at a time.
 
 **Upsert-and-prune** (`db.base.upsert_and_prune`): for each row

@@ -75,13 +75,13 @@ from accounting.repositories.interpretation import (
     load_transfer_rules,
     replace_category_patterns,
     replace_posting_splits,
-    replace_transfer_rules,
     save_overrides_for_postings,
     save_posting_split,
     undismiss_suggestion,
     update_transfer_rule,
     upsert_posting_merge,
     upsert_transfer_rule,
+    upsert_transfer_rules,
 )
 from accounting.repositories.taxonomy import (
     load_categories,
@@ -365,13 +365,14 @@ def test_save_then_load_overrides_distinguishes_no_tag_override_from_cleared_to_
 def test_save_overrides_for_postings_does_not_clobber_a_concurrently_saved_different_posting(
     db_session: Session, test_user_id: uuid.UUID
 ) -> None:
-    """Reproduces the actual bug `save_overrides_for_postings` exists to fix: two requests racing on
+    """The bug `save_overrides_for_postings` exists to fix: two requests racing on *different* postings.
 
-    *different* postings must not have one silently erase the other. `save_overrides` (the old whole-table
-    path) always rewrote every posting's override from whatever in-memory dict it was handed — a second
-    caller working off a snapshot taken before the first caller's write would resave that stale snapshot
-    and wipe the first caller's change out. `save_overrides_for_postings` takes an explicit `posting_ids`
-    scope instead, so it only ever touches the postings a given call is actually about.
+    The whole-table writer it replaced rewrote every posting's override from
+    whatever in-memory dict it was handed, so a second caller working off a
+    snapshot taken before the first caller's write would resave that stale
+    snapshot and wipe the first caller's change out.
+    `save_overrides_for_postings` takes an explicit `posting_ids` scope
+    instead, so it only ever touches the postings a given call is about.
     """
     seed_new_user_defaults(db_session, test_user_id)
     _seed_posting(db_session, test_user_id, transaction_id="t1", posting_id="p1")
@@ -392,7 +393,7 @@ def test_save_overrides_for_postings_does_not_clobber_a_concurrently_saved_diffe
     save_overrides_for_postings(["p2"], {"p2": ManualOverride(category_id="expense:travel")}, db_session, test_user_id)
 
     final = load_overrides(db_session, user_id=test_user_id)
-    assert final["p1"].category_id == "expense:food-drink"  # would be silently wiped by the old save_overrides
+    assert final["p1"].category_id == "expense:food-drink"  # the whole-table writer would have wiped this
     assert final["p2"].category_id == "expense:travel"
 
 
@@ -501,7 +502,7 @@ def test_every_repository_round_trips_its_own_entity_type(db_session: Session, t
     )
 
     # The interpretation aggregate.
-    replace_transfer_rules(
+    upsert_transfer_rules(
         db_session, test_user_id, [TransferRule(rule_id="r1", description_contains="uber", priority=1)]
     )
     replace_category_patterns(
@@ -621,7 +622,7 @@ def test_transfer_rule_round_trips_a_real_account_reference(db_session: Session,
         prune=False,
     )
     db_session.commit()
-    replace_transfer_rules(
+    upsert_transfer_rules(
         db_session,
         test_user_id,
         [
@@ -644,7 +645,7 @@ def test_transfer_rule_referencing_a_nonexistent_account_raises(db_session: Sess
     seed_new_user_defaults(db_session, test_user_id)
     rule = TransferRule(rule_id="r1", description_contains="payroll", counterparty_account_id="does-not-exist")
     with pytest.raises(UnknownNaturalKeyError):
-        replace_transfer_rules(db_session, test_user_id, [rule])
+        upsert_transfer_rules(db_session, test_user_id, [rule])
 
 
 def test_transfer_rule_round_trips_an_excluded_transaction(db_session: Session, test_user_id: uuid.UUID) -> None:
@@ -779,7 +780,7 @@ def test_upsert_posting_merge_leaves_every_other_merge_alone(db_session: Session
 def test_transfer_link_round_trips(db_session: Session, test_user_id: uuid.UUID) -> None:
     _seed_posting(db_session, test_user_id, transaction_id="t1", posting_id="p1")
     _seed_posting(db_session, test_user_id, transaction_id="t2", posting_id="p2")
-    replace_transfer_rules(
+    upsert_transfer_rules(
         db_session, test_user_id, [TransferRule(rule_id="chase-card-payoff", description_contains="payoff")]
     )
     link = TransferLink(
@@ -849,7 +850,7 @@ def test_deleting_a_rule_clears_its_links_reference_rather_than_stranding_it(
     """`ON DELETE SET NULL`: the link survives its rule, the dangling reference does not."""
     _seed_posting(db_session, test_user_id, transaction_id="t1", posting_id="p1")
     _seed_posting(db_session, test_user_id, transaction_id="t2", posting_id="p2")
-    replace_transfer_rules(db_session, test_user_id, [TransferRule(rule_id="r1", description_contains="payoff")])
+    upsert_transfer_rules(db_session, test_user_id, [TransferRule(rule_id="r1", description_contains="payoff")])
     insert_transfer_links(
         db_session,
         test_user_id,
@@ -1133,31 +1134,18 @@ def test_undismiss_suggestion_reports_false_when_nothing_to_remove(
 # of both shapes. Everything below is a guard on one of those two.
 
 
-def test_replacing_the_transfer_rules_leaves_the_category_patterns_alone(
-    db_session: Session, test_user_id: uuid.UUID
-) -> None:
-    """Both effects share `categorization_rules`, so the transfer prune must be scoped to its own."""
-    seed_new_user_defaults(db_session, test_user_id)  # seeds the default categories the pattern FKs into
-    replace_category_patterns(
-        db_session,
-        test_user_id,
-        [CategoryPattern(pattern_id="pattern:keep", description_contains="uber", category_id="expense:transport")],
-    )
-    replace_transfer_rules(db_session, test_user_id, [TransferRule(rule_id="rule:a", description_contains="a")])
-    db_session.commit()
-
-    replace_transfer_rules(db_session, test_user_id, [TransferRule(rule_id="rule:b", description_contains="b")])
-    db_session.commit()
-
-    assert [rule.rule_id for rule in load_transfer_rules(db_session, test_user_id)] == ["rule:b"]
-    assert set(load_category_patterns(db_session, test_user_id)) == {"pattern:keep"}
-
-
 def test_replacing_the_category_patterns_leaves_the_transfer_rules_alone(
     db_session: Session, test_user_id: uuid.UUID
 ) -> None:
+    """Both effects share `categorization_rules`, so the one surviving prune must be scoped to its own.
+
+    Its transfer-rule twin went with the branch it tested: `upsert_transfer_rules`
+    no longer prunes at all (item G9), so there is no transfer prune left to
+    scope. This direction is the one production takes — `POST /categories/{id}/rename`
+    rewrites the category patterns whole.
+    """
     seed_new_user_defaults(db_session, test_user_id)
-    replace_transfer_rules(db_session, test_user_id, [TransferRule(rule_id="rule:keep", description_contains="a")])
+    upsert_transfer_rules(db_session, test_user_id, [TransferRule(rule_id="rule:keep", description_contains="a")])
     replace_category_patterns(
         db_session,
         test_user_id,

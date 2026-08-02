@@ -211,7 +211,7 @@ leaves the same headroom below it as the column count grows.
 def _upsert_rule(session: Session, user_id: uuid.UUID, natural_key: str, **columns: object) -> uuid.UUID:
     """Insert-or-update one `categorization_rules` row by its natural key, leaving `version` untouched.
 
-    Shared by `replace_transfer_rules` and `replace_category_patterns`,
+    Shared by `upsert_transfer_rules` and `replace_category_patterns`,
     which differ only in which effect's columns they fill. A plain
     `session.merge()` would overwrite every mapped column on an existing
     row, including `version` (which a transient instance never sets, so it
@@ -302,59 +302,24 @@ def load_transfer_rules(session: Session, user_id: uuid.UUID) -> list[TransferRu
     ]
 
 
-def replace_rule_exclusions(session: Session, user_id: uuid.UUID, rules: Iterable[TransferRule]) -> None:
-    """Rewrite every rule's opted-out transaction set from `rules`, touching no other table.
+def upsert_transfer_rules(session: Session, user_id: uuid.UUID, rules: Iterable[TransferRule]) -> dict[str, uuid.UUID]:
+    """Insert-or-update every one of `rules`, removing nothing.
 
-    Kept separate from `replace_transfer_rules` because the exclusion rows
-    foreign-key into `categorization_rules`, so they have to be deleted
-    before that call's prune and re-inserted after its upsert.
-
-    Parameters
-    ----------
-    session
-        An open database session; the caller commits.
-    user_id
-        Whose exclusions these are.
-    rules
-        The rules whose exclusion sets to write.
-    """
-    rules = list(rules)
-    rule_ids = ids_by_natural_key(session, adb.CategorizationRule, user_id, [rule.rule_id for rule in rules])
-    transaction_ids = ids_by_natural_key(
-        session,
-        adb.Transaction,
-        user_id,
-        [transaction_id for rule in rules for transaction_id in rule.excluded_transaction_ids],
-    )
-    session.add_all(
-        adb.CategorizationRuleExclusion(
-            user_id=user_id,
-            rule_id=rule_ids[rule.rule_id],
-            transaction_id=transaction_ids[transaction_id],
-        )
-        for rule in rules
-        for transaction_id in rule.excluded_transaction_ids
-    )
-    session.flush()
-
-
-def replace_transfer_rules(
-    session: Session, user_id: uuid.UUID, rules: Iterable[TransferRule], *, prune: bool = True
-) -> dict[str, uuid.UUID]:
-    """Insert-or-update every one of `rules`, then delete this user's transfer rows not among them.
+    Purely additive, and named for it. It used to take a `prune` flag whose
+    true branch deleted this user's `effect="transfer"` rows not among
+    `rules` — a whole-collection rewrite that only ever ran from the retired
+    whole-store save. Its one surviving caller, `upsert_transfer_rule`,
+    passed `prune=False`, so the branch was unreachable in production and
+    the name promised something no request had asked for since (item G9).
+    `replace_category_patterns` still prunes, scoped to `effect="categorize"`,
+    which is why `_prune_rules` stays.
 
     Never touches `version` — see `_upsert_rule` for why the write is a raw
     `ON CONFLICT` rather than a `session.merge()`.
 
-    The prune is scoped to `effect="transfer"`: `categorization_rules` also
-    holds this user's category patterns, and a rewrite of one effect's rows
-    must not be able to delete the other's.
-
-    Never touches `categorization_rule_exclusions` — see
-    `replace_rule_exclusions` for why those are a separate call.
-
-    `prune=False` makes this purely additive — the single-rule create path
-    (`upsert_transfer_rule`), which must never remove a rule it wasn't given.
+    Never touches `categorization_rule_exclusions`. Those are diffed per rule
+    by `_sync_rule_exclusions`, which `upsert_transfer_rule` calls straight
+    after this.
 
     Returns
     -------
@@ -390,8 +355,6 @@ def replace_transfer_rules(
             active=rule.active,
         )
     session.flush()
-    if prune:
-        _prune_rules(session, user_id, effect="transfer", keep_natural_keys=set(written_ids))
     return written_ids
 
 
@@ -472,7 +435,7 @@ def upsert_transfer_rule(rule: TransferRule, session: Session, user_id: uuid.UUI
     deleted. This only ever writes `rule.rule_id`'s own row, so two creates
     for different rules can't conflict no matter how they interleave.
 
-    `version` is left alone (see `replace_transfer_rules`), so re-posting a
+    `version` is left alone (see `upsert_transfer_rules`), so re-posting a
     rule never invalidates a version a client already holds for it.
 
     Parameters
@@ -484,7 +447,7 @@ def upsert_transfer_rule(rule: TransferRule, session: Session, user_id: uuid.UUI
     user_id
         Whose rule this is.
     """
-    written_ids = replace_transfer_rules(session, user_id, [rule], prune=False)
+    written_ids = upsert_transfer_rules(session, user_id, [rule])
     _sync_rule_exclusions(session, user_id, written_ids[rule.rule_id], list(rule.excluded_transaction_ids))
     session.commit()
 
@@ -497,7 +460,7 @@ def update_transfer_rule(
     `rule.rule_id` identifies which row to update; every other field on
     `rule` (including `rule.version`, which is never read here — only
     `expected_version` is) becomes that row's new state. Unlike
-    `replace_transfer_rules`, this never reads or prunes any other rule —
+    `upsert_transfer_rules`, this never reads or prunes any other rule —
     it's a single row, guarded by
     `db.base.check_and_bump_row_version` so a stale client can't silently
     clobber a concurrent edit to the same rule. Caller is responsible for
@@ -657,7 +620,7 @@ def replace_category_patterns(
 ) -> None:
     """Insert-or-update every one of `patterns`, then delete this user's categorize rows not among them.
 
-    Same reasoning as `replace_transfer_rules`, and the same `_upsert_rule`
+    Same reasoning as `upsert_transfer_rules`, and the same `_upsert_rule`
     write: `CategoryPattern` carries a `version` column
     `PATCH /category-patterns/{pattern_id}` depends on, so a
     delete-all/reinsert-all treatment would silently reset it. The prune is
@@ -1014,54 +977,6 @@ def load_posting_merges(session: Session, user_id: uuid.UUID) -> dict[str, Posti
         )
         for row in merge_rows
     }
-
-
-def replace_posting_merges(session: Session, user_id: uuid.UUID, merges: Iterable[PostingMerge]) -> None:
-    """Replace every duplicate-resolution decision this user has, touching no other table.
-
-    Parameters
-    ----------
-    session
-        An open database session; the caller commits.
-    user_id
-        Whose merges these are.
-    merges
-        The complete desired set.
-    """
-    merges = list(merges)
-    session.query(adb.PostingMergeDuplicate).filter_by(user_id=user_id).delete()
-    session.query(adb.PostingMerge).filter_by(user_id=user_id).delete()
-    session.flush()
-    transaction_ids = ids_by_natural_key(
-        session,
-        adb.Transaction,
-        user_id,
-        [merge.kept_transaction_id for merge in merges]
-        + [duplicate_id for merge in merges for duplicate_id in merge.duplicate_transaction_ids],
-    )
-    # Parents flushed before their membership rows, so each duplicate's
-    # `merge_id` is the id `uuid7()` just minted for its own merge.
-    merge_rows = {
-        merge.merge_id: adb.PostingMerge(
-            user_id=user_id,
-            natural_key=merge.merge_id,
-            kept_transaction_id=transaction_ids[merge.kept_transaction_id],
-            description=merge.description,
-        )
-        for merge in merges
-    }
-    session.add_all(merge_rows.values())
-    session.flush()
-    session.add_all(
-        adb.PostingMergeDuplicate(
-            user_id=user_id,
-            merge_id=merge_rows[merge.merge_id].id,
-            duplicate_transaction_id=transaction_ids[duplicate_id],
-        )
-        for merge in merges
-        for duplicate_id in merge.duplicate_transaction_ids
-    )
-    session.flush()
 
 
 def upsert_posting_merge(merge: PostingMerge, session: Session, user_id: uuid.UUID) -> bool:
@@ -1540,7 +1455,7 @@ def _overrides_from_rows(
 def _insert_overrides(overrides: dict[str, ManualOverride], session: Session, user_id: uuid.UUID) -> None:
     """Insert the `PostingOverride`/`PostingOverrideTag`/pending-`Suggestion` rows for `overrides`, then commit.
 
-    The whole insert half of `save_overrides` and
+    The whole insert half of
     `save_overrides_for_postings`, which differ only in how much they delete
     first — this was duplicated verbatim between them, and every natural key
     it resolves would otherwise be looked up twice.
@@ -1615,44 +1530,19 @@ def _insert_overrides(overrides: dict[str, ManualOverride], session: Session, us
     session.commit()
 
 
-def save_overrides(overrides: dict[str, ManualOverride], session: Session, user_id: uuid.UUID) -> None:
-    """Persist every manual per-posting override, overwriting whatever was saved before.
-
-    Writes a `PostingOverride` row only when at least one actual
-    correction field is set, and a pending `Suggestion` row only when
-    `pending_source` is set (see `_pending_suggestion_row`). The pending
-    delete is scoped to `status="pending"`, so rewriting every override
-    never touches this user's dismissed-suggestion archive, which shares
-    the table.
-
-    Parameters
-    ----------
-    overrides
-        Every override, keyed by `posting_id`.
-    session
-        An open database session; `session.commit()` is called on success.
-    user_id
-        Whose overrides these are.
-    """
-    session.query(adb.PostingOverride).filter_by(user_id=user_id).delete()
-    session.query(adb.Suggestion).filter_by(user_id=user_id, status="pending").delete()
-
-    _insert_overrides(overrides, session, user_id)
-
-
 def save_overrides_for_postings(
     posting_ids: Iterable[str], overrides: dict[str, ManualOverride], session: Session, user_id: uuid.UUID
 ) -> None:
     """Persist overrides for exactly `posting_ids`, touching no other posting's stored override.
 
-    The scoped counterpart to `save_overrides`: that function always
-    deletes and reinserts every posting's override, so two callers racing
-    on *different* postings — one reads, the other reads, one writes back
-    its whole-table snapshot, the other then writes back its own
-    (now-stale) whole-table snapshot — silently erase each other's change.
-    This never reads or rewrites anything outside `posting_ids`, so two
-    such calls for different postings can't conflict no matter how they
-    interleave.
+    The only writer of `posting_overrides` there is. It replaced a
+    whole-table `save_overrides`, which deleted and reinserted every
+    posting's override on every call — so two callers racing on *different*
+    postings (one reads, the other reads, one writes back its whole-table
+    snapshot, the other then writes back its own, now-stale one) silently
+    erased each other's change. This never reads or rewrites anything
+    outside `posting_ids`, so two such calls for different postings cannot
+    conflict no matter how they interleave.
 
     Parameters
     ----------
