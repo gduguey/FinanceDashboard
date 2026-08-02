@@ -6,15 +6,20 @@ cross-cutting decisions. This is what the database *is* — not an account of ho
 it got here. The rewrite narrative that used to share these pages is in
 [archive/schema-rewrite.md](archive/schema-rewrite.md).
 
-**This document is hand-maintained, with no generator and no drift check.** It
-is verified against the SQLAlchemy models and against a scratch database built
-by `alembic upgrade head` and introspected with `\d+`, `pg_indexes`,
-`pg_policies` and `pg_constraint` — see §6 for the commands. Nothing enforces
-that it stays true between those passes, which is `docs/remaining-work.md`'s
-item **E8**. Treat a disagreement between this page and the models as a bug in
-this page.
+**This document is hand-maintained, with no generator.** It is verified against
+the SQLAlchemy models and against a scratch database built by
+`alembic upgrade head` and introspected with `\d+`, `pg_indexes`, `pg_policies`
+and `pg_constraint` — see §6 for the commands. Treat a disagreement between this
+page and the models as a bug in this page.
 
-Last verified against the models: **1.7.3**.
+**Its table inventory is gated** (item E8):
+`tests/db/test_schema_doc_drift.py` asserts §3's headings, §2's aggregate map
+and §1's counts against `Base.metadata`, in both directions, so a table added,
+removed or renamed without this page moving fails CI. Everything else here —
+every column, key, index and every line of §4's reasoning — is still only as
+current as the last manual pass, and no parser can see a sentence go stale.
+
+Last verified against the models: **1.11.1**.
 
 ---
 
@@ -27,17 +32,19 @@ enforced by the database rather than by application `WHERE` clauses.
 
 | Schema | Tables | What lives there |
 |---|---|---|
-| `public` | 5 | Identity (`users`, `external_identities`, `user_secrets`), the currency dimension, and Alembic's own `alembic_version` |
+| `public` | 4 | Identity (`users`, `external_identities`, `user_secrets`) and the currency dimension |
 | `accounting` | 28 | The cash ledger, its taxonomy, its interpretation overlays, the resolved projection, planning, the institution dimension |
-| `trades` | 5 | Broker connections, the brokerage event ledger, dashboard settings, the security dimension |
+| `trades` | 6 | Broker connections, the brokerage event ledger, the sync-run record, dashboard settings, the security dimension |
 
-**38 application tables** (39 counting `alembic_version`). Postgres 16, both
-locally and in `deploy/docker-compose.yml`.
+**38 application tables** (39 counting `alembic_version`, which is Alembic's own
+bookkeeping and lives in `public`). Postgres 16, both locally and in
+`deploy/docker-compose.yml`.
 
-Schema history is the baseline plus one revision:
-`src/migration/versions/000000000001_baseline_schema.py` (`down_revision = None`)
-and `000000000002_resolved_posting_projection.py`, which adds §3.10's two
-tables and their triggers.
+Schema history is the baseline plus two revisions:
+`src/migration/versions/000000000001_baseline_schema.py` (`down_revision = None`),
+then `000000000002_resolved_posting_projection.py`, which adds §3.10's two
+tables and their triggers, and `000000000003_sync_runs.py`, which adds
+`trades.sync_runs`.
 The previous 28-revision chain — which contained a drop-and-recreate of both
 schemas partway through and hand-copied RLS into six separate revisions — was
 collapsed, not carried forward. The project is pre-launch with no data to
@@ -77,7 +84,8 @@ a table, ask which aggregate owns it.
 | **Accounting ledger** | `accounting.transactions`, `accounting.postings`, `accounting.posting_tags` | `src/accounting/importers/ingest.py` (`load_ledger`, `_write_ledger`); the zero-sum trigger in `src/accounting/db/triggers.py` |
 | **Interpretation** | `accounting.categorization_rules`, `accounting.categorization_rule_exclusions`, `accounting.posting_overrides`, `accounting.posting_override_tags`, `accounting.posting_splits`, `accounting.posting_split_legs`, `accounting.posting_merges`, `accounting.posting_merge_duplicates`, `accounting.transfer_links`, `accounting.transfer_linked_transactions`, `accounting.suggestions` | `src/accounting/repositories/interpretation.py`; stage ordering in `src/accounting/precedence.py` |
 | **Planning** | `accounting.budgets`, `accounting.goals`, `accounting.goal_contributions`, `accounting.goal_automations` | `src/accounting/repositories/planning.py` |
-| **Trades ledger** | `trades.broker_connections`, `trades.ledger_events`, `trades.ledger_event_trade_details` | `src/trades/db/models.py`, `src/trades/brokers/ibkr/`; sign convention in `src/trades/ledger/signs.py` |
+| **Resolved projection** | `accounting.resolved_postings`, `accounting.resolved_postings_dirty` | `src/accounting/db/projection.py` (the tables and their staleness triggers), `src/accounting/repositories/projection.py` (the drain and every read of it) |
+| **Trades ledger** | `trades.broker_connections`, `trades.ledger_events`, `trades.ledger_event_trade_details`, `trades.sync_runs` | `src/trades/db/models.py`, `src/trades/brokers/ibkr/`; sign convention in `src/trades/ledger/signs.py`; the sync runner in `src/trades/api/sync_runs.py` |
 | **Settings / usage** | `trades.dashboard_settings`, `accounting.llm_usage` | `src/trades/dashboard/settings.py`, `src/accounting/llm/usage.py` |
 
 Two placements are explicitly provisional, recorded in
@@ -106,7 +114,7 @@ Conventions used throughout, so they are not repeated per table:
   `ENABLE` + `FORCE ROW LEVEL SECURITY` and one policy named `user_isolation`
   with both `USING` and `WITH CHECK`.
 - **`created_at` / `updated_at`** — `timestamptz NOT NULL DEFAULT now()` on all
-  37 tables; `updated_at` additionally carries the mapper's `onupdate=now()`.
+  38 tables; `updated_at` additionally carries the mapper's `onupdate=now()`.
 - **`natural_key`** — `varchar NOT NULL`, with
   `UNIQUE (user_id, natural_key)`. The domain's addressing mechanism.
 - **Index naming** — `ix_<table>_<cols>`; every non-unique index listed below is
@@ -966,8 +974,8 @@ CREATE POLICY user_isolation ON s.t
 - The GUC is set per transaction by `set_config('app.current_user_id', :id, true)`
   in `src/db/session.py`, from `Depends(get_current_user_id)`.
 
-**Counts, verified in the scratch database:** 31 policies on 31 tables. 35 app
-tables − 3 dimension tables − 1 exemption = 31. All 31 have both
+**Counts, verified in the scratch database:** 34 policies on 34 tables. 38 app
+tables − 3 dimension tables − 1 exemption = 34. All 34 have both
 `relrowsecurity` and `relforcerowsecurity`.
 
 **The one exemption** is `public.external_identities`, with its reason recorded
@@ -1536,7 +1544,9 @@ Alembic's own. No discrepancy was found.
 
 CI checks that same agreement on every PR: the `Migrations apply and match the
 models` job runs `alembic check` against a freshly migrated database, so
-*models versus database* can never silently drift. What has no gate is **this
-document** versus either of them — see the note at the top, and item **E8**.
+*models versus database* can never silently drift. **This document**'s table
+inventory is gated against the models too, by
+`tests/db/test_schema_doc_drift.py` (item E8) — which is why the counts above
+and in §1 can be trusted, and why no line of §4's reasoning can be.
 
 Never point any of this at `finance_dev`, `finance_test`, or a remote host.
