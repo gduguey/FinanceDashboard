@@ -34,6 +34,7 @@ from typing import TYPE_CHECKING, Any
 import pytest
 
 import accounting.db as adb
+from accounting.importers.ingest import load_ledger
 from accounting.repositories.projection import drain, fresh_display_rows, rebuild
 from db.money import quantize_money
 from tests.accounting.conftest import ACCOUNTING, _create_account, _import, _posting_on, _postings
@@ -190,6 +191,15 @@ def test_the_fixture_exercises_every_overlay(seeded_ledger, client, db_session) 
     resolved = fresh_display_rows(db_session, DEFAULT_USER_ID)
     assert any(row["is_real_income_expense"] for row in resolved), "no real income/expense leg"
     assert any(row["category_id"] == "expense:shopping" for row in resolved), "no overridden category to redirect"
+    # The taxonomy lookup, read off the *raw* ledger rather than the resolved
+    # one. `apply_category_redirects` only ever rewrites a posting whose stored
+    # `category_id` is a retired key, so an override carrying the same value
+    # says nothing about it — and until this fixture imported a categorized
+    # statement, every category case below passed over an empty redirect map.
+    raw = load_ledger(db_session, DEFAULT_USER_ID)
+    assert "expense:shopping" in raw["category_id"].to_list(), (
+        "taxonomy: no posting is filed under a raw category, so `apply_category_redirects` has nothing to redirect"
+    )
 
 
 def test_a_cold_projection_matches_the_pipeline(seeded_ledger, db_session) -> None:
@@ -460,6 +470,56 @@ def test_the_projection_still_equals_the_pipeline_after(name, mutate, seeded_led
     """
     assert_projection_equals_the_pipeline(db_session)
     mutate(client, seeded_ledger, db_session)
+    assert_projection_equals_the_pipeline(db_session)
+
+
+def _resolved_category(session: Session, posting_id: str) -> str | None:
+    """One posting's stored resolved category.
+
+    Returns
+    -------
+    str or None
+    """
+    row = session.query(adb.ResolvedPosting).filter_by(user_id=DEFAULT_USER_ID, posting_id=posting_id).one()
+    return row.category_id
+
+
+def test_a_category_merge_repoints_the_postings_filed_under_it(seeded_ledger, client, db_session) -> None:
+    """The taxonomy lookup's own outcome, asserted rather than left to the equality above.
+
+    `test_the_projection_still_equals_the_pipeline_after["rename a category
+    into another"]` proves the cache agrees with the pipeline — including when
+    both are wrong together, and including when the merge moved nothing at
+    all. This names the row and the value: the posting the statement filed
+    under `expense:shopping` reads as `expense:home-housing` afterwards,
+    with no posting rewritten.
+
+    It is also what the narrowed `categories` staleness trigger rests on
+    (item C9). Narrowing invalidation to "the postings filed under the
+    changed category" is only safe if a change to that category actually
+    reaches those postings and nothing else.
+    """
+    assert_projection_equals_the_pipeline(db_session)
+    stationery = seeded_ledger["stationery_posting_id"]
+    assert _resolved_category(db_session, stationery) == "expense:shopping"
+
+    _rename_a_category_into_another(client, seeded_ledger, db_session)
+    drain(db_session, DEFAULT_USER_ID)
+
+    assert _resolved_category(db_session, stationery) == "expense:home-housing"
+    assert_projection_equals_the_pipeline(db_session)
+
+
+def test_a_category_delete_uncategorizes_the_postings_filed_under_it(seeded_ledger, client, db_session) -> None:
+    """The other half of retirement: no successor, so the postings read as never categorized."""
+    assert_projection_equals_the_pipeline(db_session)
+    stationery = seeded_ledger["stationery_posting_id"]
+    assert _resolved_category(db_session, stationery) == "expense:shopping"
+
+    _delete_a_category(client, seeded_ledger, db_session)
+    drain(db_session, DEFAULT_USER_ID)
+
+    assert _resolved_category(db_session, stationery) is None
     assert_projection_equals_the_pipeline(db_session)
 
 

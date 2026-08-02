@@ -99,10 +99,11 @@ def _create_account(client: TestClient, **overrides: Any) -> dict:
     return response.json()
 
 
-def _import(client: TestClient, account: dict, rows: str) -> None:
+def _import(client: TestClient, account: dict, rows: str, *, header: str = "Date,Description,Amount") -> None:
+    """Import canonical rows. `header` names the optional columns `rows` carries — see `csv.CANONICAL_COLUMNS`."""
     response = client.post(
         f"{ACCOUNTING}/import/canonical",
-        files={"file": ("ledger.csv", f"Date,Description,Amount\n{rows}", "text/csv")},
+        files={"file": ("ledger.csv", f"{header}\n{rows}", "text/csv")},
         data={
             "institution": account["institution"],
             "account_kind": account["kind"],
@@ -164,6 +165,19 @@ def seeded_ledger(client: TestClient, db_session: Session) -> dict:  # noqa: PLR
         ),
     )
     _import(client, savings, f"{first + timedelta(days=5)},MOVE FROM CHECKING,500.00\n")
+
+    # The taxonomy lookup's own input, and the only posting here that has one:
+    # a *raw* `postings.category_id`, written by the statement rather than by a
+    # user. `apply_category_redirects` rewrites nothing else (see
+    # `accounting.db.projection.AFFECTED_TRANSACTIONS`), so without this row
+    # every category case below would resolve an empty redirect map and assert
+    # nothing about the one stage that reads `categories`.
+    _import(
+        client,
+        checking,
+        f"{first + timedelta(days=8)},STATIONERY SHOP,-12.00,Shopping\n",
+        header="Date,Description,Amount,Category",
+    )
 
     # `counterparty` — a rule repointing a placeholder at a real, non-importable account.
     rule = client.post(
@@ -243,6 +257,8 @@ def seeded_ledger(client: TestClient, db_session: Session) -> dict:  # noqa: PLR
     bookshop = _posting_on(client, checking["account_id"], "BOOKSHOP")
     client.put(f"{ACCOUNTING}/postings/{bookshop['posting_id']}/override", json={"category_id": "expense:shopping"})
 
+    stationery = _posting_on(client, checking["account_id"], "STATIONERY SHOP")
+
     return {
         "checking": checking,
         "savings": savings,
@@ -253,6 +269,10 @@ def seeded_ledger(client: TestClient, db_session: Session) -> dict:  # noqa: PLR
         "coffee_posting_id": coffee["posting_id"],
         "pharmacy_posting_id": pharmacy["posting_id"],
         "bookshop_posting_id": bookshop["posting_id"],
+        # Filed under `expense:shopping` by the statement, not by a user — the
+        # raw category the redirect lookup reads. See the import above.
+        "stationery_posting_id": stationery["posting_id"],
+        "stationery_transaction_id": stationery["transaction_id"],
         "kept_transaction_id": duplicates[0],
         "merged_away_transaction_id": duplicates[1],
         "link_id": link.json()["link_id"],
