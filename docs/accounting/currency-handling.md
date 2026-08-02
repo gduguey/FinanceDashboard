@@ -52,6 +52,21 @@ turns into a null amount that every `sum` then silently skips, producing a
 wrong total that looks like a right one — and refusing the request, which
 would make a single old posting a 400 for the whole income statement.
 
+**The currency axis has the same exposure, and there the answer is the
+opposite one.** A row whose currency the rate table has no entry for — or
+whose currency column is null — joins to nothing and lands in exactly that
+skipped-by-`sum` state. Unlike an old date, that is never a legitimate
+input: it means the table was not built from the rows being converted.
+`with_converted_amount` raises `UnconvertibleCurrencyError` instead, on
+both the dated and the scalar path, and nothing catches it — the same
+convention `db.base.UnknownNaturalKeyError` follows. Every API caller
+builds its table from `api.dependencies._currencies_in_use`, derived from
+the same accounts, assets and contributions it is about to convert, so no
+caller in this repo can trip it; the check exists because nothing enforced
+that, and a caller assembling its own frame would not inherit it. It costs
+a `collect()` over one column, measured at nothing on the gated read path
+— see `_reject_currencies_with_no_rate` for the figures.
+
 ## Where a rate comes from
 
 `accounting/market_data/exchange_rates.py` fetches daily historical rates

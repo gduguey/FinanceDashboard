@@ -60,6 +60,74 @@ class DisplayCurrency:
     rates_by_date: pl.DataFrame | None = field(default=None, compare=False)
 
 
+class UnconvertibleCurrencyError(ValueError):
+    """A frame carried a currency the rate table has no entry for — a row that would vanish from a sum.
+
+    Raised by `with_converted_amount`, and caught nowhere, following
+    `db.base.UnknownNaturalKeyError`'s convention for the same class of
+    problem: a caller handing in a reference nothing can satisfy is a bug
+    in the caller, not a condition to recover from.
+
+    What it replaces is the reason it exists. Both conversion paths
+    *left*-join their rate table, so a currency with no entry produced a
+    null rate, a null amount, and a `sum` that silently skipped the row —
+    a total that is wrong and looks right. A `None` in the currency
+    column has exactly the same effect and is included here for that
+    reason, which matters because it can arrive one join earlier:
+    `dashboard.income_statement.real_income_expense_legs` left-joins its
+    `account_currency` off the `accounts` dict it was handed, so a
+    posting on an account missing from that dict is already unconvertible
+    before this function sees it.
+    """
+
+
+def _reject_currencies_with_no_rate(frame: pl.LazyFrame, covered: set[str], currency_column: str) -> None:
+    """Fail loudly if `frame` carries a currency (or a null) `covered` has no rate for.
+
+    Item A7, and the docstring it replaces was wrong about the cost. That
+    docstring said making this loud "needs a `collect()` and would cost
+    the laziness every caller composes on", so the obligation was left to
+    the caller. Measured against the latency gate's own 10k/2k tenants on
+    `GET /income-statement/category-totals`, median of repeats, two runs
+    each: 308/313 ms at 10k before, 300/317 ms after, and 3.05x/2.99x
+    against 2.91x/2.93x — indistinguishable from noise, with every bound
+    in `tests/performance/test_read_path_latency.py` unmoved.
+
+    The reason it is free is worth keeping rather than the number: every
+    caller composes over a frame that is *already* materialised
+    (`resolved_postings_for_aggregation` and `contributions_to_frame`
+    both return eager `DataFrame`s), so the sub-plan this re-executes is
+    a projection-pushed pass over one in-memory column, not a second
+    database read. A future caller composing over a lazy scan would pay
+    twice — and the gate above would say so.
+
+    Parameters
+    ----------
+    frame
+        The frame about to be converted.
+    covered
+        Every currency the rate table has a rate for.
+    currency_column
+        Which column names each row's own currency.
+
+    Raises
+    ------
+    UnconvertibleCurrencyError
+        If any row's currency is absent from `covered`, or is null.
+    """
+    present = frame.select(pl.col(currency_column).unique()).collect()[currency_column].to_list()
+    missing = {code for code in present if code not in covered}
+    if missing:
+        named = ", ".join(repr(code) for code in sorted(missing, key=str))
+        message = (
+            f"{currency_column} carries {named}, which the rate table has no rate for "
+            f"(it covers {', '.join(sorted(covered))}). Every row of that currency would convert to a null "
+            "amount and be skipped by every sum. Build the rate table from the same rows being converted — "
+            "see `api.dependencies._currencies_in_use`."
+        )
+        raise UnconvertibleCurrencyError(message)
+
+
 def with_converted_amount(
     frame: pl.LazyFrame, display: DisplayCurrency, currency_column: str, date_column: str
 ) -> pl.LazyFrame:
@@ -77,19 +145,23 @@ def with_converted_amount(
     rate, which a left join turns into a null amount and every `sum`
     then silently skips — a wrong total that looks like a right one.
 
-    That reasoning covers the *date* axis only. The currency axis carries
-    the same exposure and is a caller obligation rather than something
-    enforced here: a row whose currency is in neither rate table joins to
-    nothing and lands in exactly that null-amount state. Every API caller
-    builds its table from `api.dependencies._currencies_in_use`, which is
-    derived from the same accounts, assets and contributions being
-    converted, so the set is complete by construction. Making it loud
-    instead of implicit needs a `collect()` and would cost the laziness
-    every caller composes on — tracked as A7 in `docs/remaining-work.md`.
+    That reasoning covers the *date* axis. The currency axis carries the
+    same exposure and is now enforced rather than documented: a row whose
+    currency has no rate — in either table, or null — raises
+    `UnconvertibleCurrencyError` before the join that would turn it into
+    a null amount. Every API caller builds its table from
+    `api.dependencies._currencies_in_use`, derived from the same
+    accounts, assets and contributions being converted, so the set is
+    complete by construction and no caller in this repo can trip it; the
+    point of the check is that nothing enforced that, and a future caller
+    assembling its own frame would not inherit it (item A7). See
+    `_reject_currencies_with_no_rate` for what it costs, which is
+    nothing.
 
     With no `rates_by_date` the whole frame converts at `rates_to_base`,
     the pre-per-date behaviour, which is what a direct caller
-    constructing a bare `DisplayCurrency` gets.
+    constructing a bare `DisplayCurrency` gets. That path left-joins too,
+    so it is guarded identically.
 
     Parameters
     ----------
@@ -106,8 +178,14 @@ def with_converted_amount(
     -------
     polars.LazyFrame
         `frame` with `amount` converted, and no extra columns.
-    """
+
+    Raises
+    ------
+    UnconvertibleCurrencyError
+        If any row's currency has no rate in whichever table applies.
+    """  # noqa: DOC502 — raised by `_reject_currencies_with_no_rate`, called on both paths below
     if display.rates_by_date is None:
+        _reject_currencies_with_no_rate(frame, set(display.rates_to_base), currency_column)
         rate_table = pl.LazyFrame(
             {currency_column: list(display.rates_to_base.keys()), "rate": list(display.rates_to_base.values())},
             schema={currency_column: pl.Utf8, "rate": pl.Float64},
@@ -119,6 +197,7 @@ def with_converted_amount(
             .drop("rate_into_display")
         )
 
+    _reject_currencies_with_no_rate(frame, set(display.rates_by_date["currency"].to_list()), currency_column)
     first = cast("date", display.rates_by_date["rate_date"].min())
     last = cast("date", display.rates_by_date["rate_date"].max())
     dated_rates = display.rates_by_date.lazy().rename({"currency": currency_column})
