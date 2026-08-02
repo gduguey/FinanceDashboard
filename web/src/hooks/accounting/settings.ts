@@ -88,6 +88,20 @@ export const useExchangeRateHistory = (currency: string) =>
     retry: false,
   })
 
+// How far back the rate history a figure was converted with actually
+// reaches (item A5). `earliest === null` means nothing is converted for
+// this user at all — the display currency and every currency they hold
+// are the base currency — which is what keeps `ClampedRateNote` silent
+// rather than warning about arithmetic that never ran. `retry: false`
+// for the same reason the two hooks above use it: an unsynced currency
+// answers 400, and retrying a deliberate refusal only delays the render.
+export const useExchangeRateCoverage = (displayCurrency: string) =>
+  useQuery({
+    queryKey: keys.exchangeRateCoverage(displayCurrency),
+    queryFn: () => accountingApi.exchangeRateCoverage(displayCurrency),
+    retry: false,
+  })
+
 // A client-side rates-to-base table, for the one place this app converts
 // currencies outside a backend response — mixing accounts and other
 // assets into one allocation pie. Every non-base `CurrencyCode` needs its

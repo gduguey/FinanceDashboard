@@ -18,7 +18,7 @@ import uuid
 from datetime import date, datetime
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import AfterValidator, BaseModel, Field
 
 from accounting.api.entities import (
     Account,
@@ -39,6 +39,7 @@ from accounting.api.entities import (
     TransferRule,
 )
 from accounting.models import (
+    BASE_CURRENCY,
     AccountKind,
     CategoryClassification,
     CompoundingFrequency,
@@ -51,6 +52,52 @@ from accounting.models import (
 )
 from db.money import ZERO, Money, Rate
 from http_api.pagination import PAGE_LIMIT_DEFAULT, PAGE_LIMIT_MAX, Page
+
+
+def _reject_a_non_base_currency(value: CurrencyCode) -> CurrencyCode:
+    """Refuse a contribution automation denominated in anything but the base currency.
+
+    Item A6. Unallocated money is a *comparison basis*, not a display
+    figure, and `api.routers.goals._unallocated_basis` computes it in
+    `models.BASE_CURRENCY` for that reason — so
+    `ledger.goal_automations.run_recurring_additions` draws from a
+    base-currency pool and every amount it hands back is base-currency.
+    A non-base automation broke that in both directions at once: a
+    `fixed_amount` EUR `value` was subtracted from the pool as though it
+    were USD, and the resulting contribution was persisted labelled EUR
+    while holding a USD-derived amount, which every later conversion
+    then compounded.
+
+    Refused rather than converted, deliberately. No UI can select a
+    currency here — `GoalAutomationsPanel.tsx` sends `'USD'` on both
+    create and edit and offers no picker — so converting would be
+    arithmetic on money that nothing exercises. The conversion this
+    should become the day a picker exists is written up as A6's entry in
+    `docs/remaining-work.md`, with the round-trip property it has to
+    hold.
+
+    Returns
+    -------
+    CurrencyCode
+        `value`, unchanged, when it is the base currency.
+
+    Raises
+    ------
+    ValueError
+        If `value` is any other currency; pydantic turns it into a 422.
+    """
+    if value != BASE_CURRENCY:
+        message = (
+            f"A contribution automation must be denominated in {BASE_CURRENCY}, not {value!r} — "
+            "unallocated money is computed in the base currency, so a schedule in another one "
+            "would fund from a pool it is not measured against."
+        )
+        raise ValueError(message)
+    return value
+
+
+BaseCurrencyOnly = Annotated[CurrencyCode, AfterValidator(_reject_a_non_base_currency)]
+"""A `CurrencyCode` a request may only ever set to `models.BASE_CURRENCY` — see `_reject_a_non_base_currency`."""
 
 
 class AccountingStoreResponse(BaseModel):
@@ -116,6 +163,31 @@ class CurrentExchangeRate(BaseModel):
     rate_to_base: float
     as_of: date
     window_days: int
+
+
+class RateCoverage(BaseModel):
+    """How far back the rate history this user's figures are converted with actually reaches.
+
+    Response body for `GET /exchange-rates/coverage`, and item A5's whole
+    server half. A dated flow older than the cache has no trailing mean of
+    its own and is converted at the oldest one on file
+    (`ledger.currency.with_converted_amount` clamps it); that clamp is
+    right, documented, and until now invisible on screen. This is the one
+    fact a client needs to say so: an income statement, budget or spend
+    curve whose window starts before `earliest` contains at least one
+    figure computed at a rate that is not its own date's.
+
+    Both fields are `None` when no conversion happens at all — the
+    display currency and every currency this user holds are the base
+    currency, so every rate is `1.0` on every day and there is nothing to
+    clamp. That mirrors `api.dependencies._rates_by_date` returning
+    `None` for the same case, and it is what keeps the note silent for a
+    single-currency user rather than warning them about arithmetic that
+    never ran.
+    """
+
+    earliest: date | None
+    latest: date | None
 
 
 class ExchangeRateHistoryPoint(BaseModel):
@@ -330,7 +402,7 @@ class GoalAutomationCreate(BaseModel):
     end_date: date | None = None
     mode: GoalAutomationMode
     value: Money = Field(default=ZERO, json_schema_extra={"default": 0})
-    currency: CurrencyCode = "USD"
+    currency: BaseCurrencyOnly = BASE_CURRENCY
 
 
 class GoalAutomationUpdate(BaseModel):
@@ -355,7 +427,7 @@ class GoalAutomationUpdate(BaseModel):
     end_date: date | None = None
     mode: GoalAutomationMode
     value: Money = Field(default=ZERO, json_schema_extra={"default": 0})
-    currency: CurrencyCode = "USD"
+    currency: BaseCurrencyOnly = BASE_CURRENCY
     priority: int
 
 

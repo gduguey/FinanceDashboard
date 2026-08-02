@@ -621,6 +621,9 @@ def ingest_csv(
     validate_balanced(merged)
     _write_ledger(merged, session, user_id=user_id)
     reconcile_and_persist_rule_links(merged, session, user_id=user_id)
+    # `reconcile_and_persist_rule_links` flushes rather than commits (item D4),
+    # so the links it proposed land with whatever `_write_ledger` left pending.
+    session.commit()
 
     return IngestResult(
         account_id=account_id,
@@ -808,6 +811,9 @@ def _apply_canonical_outcome(
     validate_balanced(merged)
     _write_ledger(merged, session, user_id=user_id)
     reconcile_and_persist_rule_links(merged, session, user_id=user_id)
+    # `reconcile_and_persist_rule_links` flushes rather than commits (item D4),
+    # so the links it proposed land with whatever `_write_ledger` left pending.
+    session.commit()
 
     return CanonicalIngestResult(
         account_id=account_id,
@@ -915,4 +921,6 @@ def rebuild_from_raw_statements(config: AccountingConfig, session: Session, user
     validate_balanced(ledger)
     _write_ledger(ledger, session, user_id=user_id)
     reconcile_and_persist_rule_links(ledger, session, user_id=user_id)
+    # See the two ingest paths above: this function owns the commit now.
+    session.commit()
     return ledger

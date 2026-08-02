@@ -2474,6 +2474,110 @@ def test_category_rename_merge_leaves_the_raw_ledger_carrying_the_imported_categ
     assert resolved_leg["category_id"] == "expense:food"
 
 
+def _import_two_bare_categories(client, account) -> tuple[dict, dict]:
+    """Mint two top-level categories the default tree does not have, each with no subcategory.
+
+    Through the importer rather than `POST /categories`, because that is
+    the only route that mints a top-level category the default tree has
+    never heard of — and "neither side has a subcategory yet" is the
+    starting state item A9 needs.
+
+    Returns
+    -------
+    tuple[dict, dict]
+        The `Nourriture` and `Comida` categories, as `GET /store` reports them.
+    """
+    csv_text = (
+        "Date,Description,Amount,Category\n2026-06-30,Store,-42.50,Nourriture\n2026-06-29,Other Store,-10.00,Comida\n"
+    )
+    client.post(
+        "/api/v1/accounting/import/canonical",
+        files={"file": ("generic.csv", csv_text, "text/csv")},
+        data={
+            "institution": "Generic Bank",
+            "account_kind": "checking",
+            "account_id": account["account_id"],
+            "account_name": "Generic Checking",
+        },
+    )
+    categories = client.get("/api/v1/accounting/store").json()["categories"].values()
+    return (
+        next(c for c in categories if c["name"] == "Nourriture"),
+        next(c for c in categories if c["name"] == "Comida"),
+    )
+
+
+def test_category_rename_merges_into_a_target_that_has_no_subcategories_yet(client) -> None:
+    """Item A9: the merge mints the target's "Other" catch-all, and used to resolve it before creating it.
+
+    Reparenting `Nourriture`'s only real subcategory under `Comida` makes
+    `taxonomy.normalize_categories` give `Comida` an "Other" of its own,
+    and `plan_category_rename` maps `Nourriture`'s own "Other" onto that
+    brand-new id. `retire_categories` resolves every successor through
+    `ids_by_natural_key`, which subscripts rather than `.get`s, so before
+    the additive write at the top of the handler this raised
+    `UnknownNaturalKeyError: accounting.categories has no row with natural
+    key 'expense:comida:other'` — a 500 on a plain rename.
+    """
+    account = _create_account(client, name="Generic Checking", kind="checking", institution="Generic Bank")
+    nourriture, comida = _import_two_bare_categories(client, account)
+    client.post(
+        f"/api/v1/accounting/categories/{nourriture['category_id']}/subcategories",
+        json={"name": "Restaurants", "color": "#222222"},
+    )
+
+    response = client.post(
+        f"/api/v1/accounting/categories/{nourriture['category_id']}/rename", json={"name": comida["name"]}
+    )
+
+    assert response.status_code == 200, response.text
+    categories = response.json()["categories"]
+    assert response.json()["merged"] is True
+    assert nourriture["category_id"] not in categories
+    # Reparented, not re-keyed: a subcategory with no same-named sibling under
+    # the target keeps its own id and only changes parent (see
+    # `taxonomy.plan_category_rename`), which is why it is not in `id_remap`
+    # and why the catch-all is the only new row this merge needs.
+    reparented = categories[f"{nourriture['category_id']}:restaurants"]
+    assert reparented["parent_category_id"] == comida["category_id"]
+    assert f"{comida['category_id']}:other" in categories
+
+
+def test_category_rename_merge_repoints_a_budget_filed_under_the_minted_catch_all(client) -> None:
+    """The same A9 exposure one step earlier — `replace_budgets` resolves the successor too.
+
+    `_write_category_references` runs before `retire_categories`, so a
+    budget filed under the merged-away category's "Other" is repointed
+    onto the target's not-yet-existing one and resolved there first. The
+    minimal reproduction never reached it because it had no such row.
+    """
+    account = _create_account(client, name="Generic Checking", kind="checking", institution="Generic Bank")
+    nourriture, comida = _import_two_bare_categories(client, account)
+    client.post(
+        f"/api/v1/accounting/categories/{nourriture['category_id']}/subcategories",
+        json={"name": "Restaurants", "color": "#222222"},
+    )
+    budget = client.post(
+        "/api/v1/accounting/budgets",
+        json={
+            "category_id": nourriture["category_id"],
+            "subcategory_id": f"{nourriture['category_id']}:other",
+            "amount": "50.00",
+            "currency": "USD",
+            "month": None,
+        },
+    )
+    assert budget.status_code == 201, budget.text
+
+    response = client.post(
+        f"/api/v1/accounting/categories/{nourriture['category_id']}/rename", json={"name": comida["name"]}
+    )
+
+    assert response.status_code == 200, response.text
+    budgets = client.get("/api/v1/accounting/store").json()["budgets"]
+    assert [b["subcategory_id"] for b in budgets] == [f"{comida['category_id']}:other"]
+
+
 def test_category_rename_merge_repoints_a_manual_override(client) -> None:
     account = _create_account(client, name="Generic Checking", kind="checking", institution="Generic Bank")
     csv_text = "Date,Description,Amount,Category\n2026-06-30,Store,-42.50,Nourriture\n"
@@ -2581,6 +2685,96 @@ def test_category_delete_cascades_to_subcategories(client) -> None:
 def test_category_delete_404s_for_an_unknown_category(client) -> None:
     response = client.delete("/api/v1/accounting/categories/expense:nope")
     assert response.status_code == 404
+
+
+def test_deleting_the_last_subcategory_clears_the_budget_on_the_catch_all_it_takes_with_it(client) -> None:
+    """Item A10: `normalize_categories` removes a row the request never named, and it has references.
+
+    Deleting a category's only real subcategory leaves "Other" alone
+    under its parent, which is meaningless, so the catch-all goes too.
+    Nothing repointed the budget filed under it, and
+    `replace_categories`' prune then hit
+    `fk_budgets_subcategory_id_categories` — an `IntegrityError`, a 500,
+    on a plain subcategory delete.
+    """
+    client.post(
+        "/api/v1/accounting/categories", json={"name": "Custom", "classification": "expense", "color": "#000000"}
+    )
+    client.post(
+        "/api/v1/accounting/categories/expense:custom/subcategories", json={"name": "Gadgets", "color": "#222222"}
+    )
+    budget = client.post(
+        "/api/v1/accounting/budgets",
+        json={
+            "category_id": "expense:custom",
+            "subcategory_id": "expense:custom:other",
+            "amount": "50.00",
+            "currency": "USD",
+            "month": None,
+        },
+    )
+    assert budget.status_code == 201, budget.text
+
+    response = client.delete("/api/v1/accounting/categories/expense:custom:gadgets")
+
+    assert response.status_code == 200, response.text
+    categories = response.json()["categories"]
+    assert "expense:custom:gadgets" not in categories
+    assert "expense:custom:other" not in categories
+    assert "expense:custom" in categories
+    # The budget survives as a category-level one: only its `subcategory_id`
+    # named a deleted id, and that field is nullable.
+    budgets = client.get("/api/v1/accounting/store").json()["budgets"]
+    assert [(b["category_id"], b["subcategory_id"]) for b in budgets] == [("expense:custom", None)]
+
+
+def test_deleting_the_last_subcategory_uncategorizes_postings_filed_under_the_catch_all(client) -> None:
+    """The same A10 set, counted rather than cleared — and the worse half of it.
+
+    A posting filed under the auto-removed "Other" is raw import
+    provenance behind a `NO ACTION` foreign key, so pruning that row
+    could not merely fail the request, it would be a delete the schema
+    refuses. Retiring it with the rest is what makes it safe, and it is
+    what makes the reported count right.
+
+    **This changes a number a user reads**: `uncategorized_posting_count`
+    (and the identical figure `GET /categories/{id}/delete-preview`
+    shows in the confirmation dialog) now includes the postings filed
+    under the catch-all. Those postings genuinely do become
+    uncategorized, so the larger number is the correct one.
+    """
+    account = _create_account(client, name="Generic Checking", kind="checking", institution="Generic Bank")
+    csv_text = (
+        "Date,Description,Amount,Category,Subcategory\n"
+        "2026-06-30,Gadget Store,-42.50,Custom,Gadgets\n"
+        "2026-06-29,Odds And Ends,-10.00,Custom,Other\n"
+    )
+    client.post(
+        "/api/v1/accounting/import/canonical",
+        files={"file": ("generic.csv", csv_text, "text/csv")},
+        data={
+            "institution": "Generic Bank",
+            "account_kind": "checking",
+            "account_id": account["account_id"],
+            "account_name": "Generic Checking",
+        },
+    )
+    store = client.get("/api/v1/accounting/store").json()
+    custom = next(c for c in store["categories"].values() if c["name"] == "Custom")
+    gadgets = f"{custom['category_id']}:gadgets"
+    catch_all = f"{custom['category_id']}:other"
+    assert catch_all in store["categories"]
+
+    preview = client.get(f"/api/v1/accounting/categories/{gadgets}/delete-preview")
+    response = client.delete(f"/api/v1/accounting/categories/{gadgets}")
+
+    assert response.status_code == 200, response.text
+    assert catch_all not in response.json()["categories"]
+    # Both postings, not just the one filed under `gadgets`.
+    assert response.json()["uncategorized_posting_count"] == 2
+    assert preview.json()["posting_count"] == 2, "the dialog's count disagreed with what the delete then reported"
+    resolved = _postings(client, account_ids=account["account_id"])
+    assert {posting["subcategory_id"] for posting in resolved} == {None}
 
 
 def test_post_category_creates_a_new_top_level_category(client) -> None:
@@ -3221,6 +3415,56 @@ def test_get_exchange_rate_history_after_sync(client, monkeypatch) -> None:
     assert response.status_code == 200
     body = response.json()
     assert [row["rate"] for row in body] == pytest.approx([1.9, 2.1])
+
+
+def test_exchange_rate_coverage_is_null_when_nothing_is_converted(client) -> None:
+    """Item A5: a single-currency user has no clamp to be told about, so the note must stay silent.
+
+    Mirrors `api.dependencies._rates_by_date` returning `None` for the
+    same case — with the base currency the only one in play, every rate
+    is `1.0` on every day and no figure is an approximation.
+    """
+    _create_account(client, name="Chase Checking", kind="checking", institution="Chase", currency="USD")
+
+    response = client.get("/api/v1/accounting/exchange-rates/coverage")
+
+    assert response.status_code == 200
+    assert response.json() == {"earliest": None, "latest": None}
+
+
+def test_exchange_rate_coverage_reports_the_span_once_a_second_currency_is_in_play(client, monkeypatch) -> None:
+    """The window a client compares an income statement's own start against."""
+    _mock_fetch(monkeypatch)
+    exchange_rates.update_rate_history_cache(accounting_api.state.config)
+    _create_account(client, name="BNP Checking", kind="checking", institution="BNP", currency="EUR")
+
+    response = client.get("/api/v1/accounting/exchange-rates/coverage")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["earliest"] == (date.today() - timedelta(days=1)).isoformat()
+    assert body["latest"] == date.today().isoformat()
+
+
+def test_exchange_rate_coverage_reports_a_span_for_a_non_base_display_currency_alone(client, monkeypatch) -> None:
+    """Holding only USD but *displaying* in EUR still converts, so it still clamps."""
+    _mock_fetch(monkeypatch)
+    exchange_rates.update_rate_history_cache(accounting_api.state.config)
+    _create_account(client, name="Chase Checking", kind="checking", institution="Chase", currency="USD")
+
+    response = client.get("/api/v1/accounting/exchange-rates/coverage", params={"display_currency": "EUR"})
+
+    assert response.status_code == 200
+    assert response.json()["earliest"] == (date.today() - timedelta(days=1)).isoformat()
+
+
+def test_exchange_rate_coverage_400s_when_a_needed_currency_was_never_synced(client) -> None:
+    """The same refusal every flow endpoint makes, rather than reporting a window for rates that cannot be built."""
+    _create_account(client, name="BNP Checking", kind="checking", institution="BNP", currency="EUR")
+
+    response = client.get("/api/v1/accounting/exchange-rates/coverage")
+
+    assert response.status_code == 400
 
 
 def test_post_account_creates_a_new_account(client) -> None:

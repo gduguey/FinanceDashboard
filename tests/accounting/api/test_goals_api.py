@@ -556,6 +556,41 @@ def test_goals_summary_converts_into_the_requested_display_currency(client, monk
     assert summary["unallocated"] == pytest.approx(1250.0)
 
 
+def test_a_contribution_automation_may_only_be_denominated_in_the_base_currency(client, db_session) -> None:
+    """Item A6: the unallocated pool is base-currency, so a schedule funded from it has to be too.
+
+    A EUR automation used to be accepted and then broke the arithmetic in
+    both directions: `run_recurring_additions` subtracted a
+    `fixed_amount` EUR `value` from the pool as though it were USD, and
+    the handler persisted the resulting USD-derived amount labelled EUR,
+    which every later per-date conversion compounded. Refused rather than
+    converted — see `api_models._reject_a_non_base_currency` for why, and
+    A6 in `docs/remaining-work.md` for the conversion this becomes the
+    day a currency picker exists.
+    """
+    _create_goal(db_session)
+    payload = {
+        "goal_id": "emergency-fund",
+        "start_date": "2026-01-05",
+        "frequency": "monthly",
+        "mode": "fixed_amount",
+        "value": 500.0,
+        "currency": "EUR",
+    }
+
+    created = client.post("/api/v1/accounting/goal-automations/contributions", json=payload)
+
+    assert created.status_code == 422, created.text
+    assert "must be denominated in USD" in created.text
+    # The edit route takes the same body shape and had the same hole.
+    usd = _add_contribution_automation(client)
+    patched = client.patch(
+        f"/api/v1/accounting/goal-automations/{usd['automation_id']}",
+        json={**payload, "currency": "EUR", "priority": usd["priority"]},
+    )
+    assert patched.status_code == 422, patched.text
+
+
 def test_run_contribution_automations_writes_a_contribution_once_due(client, db_session) -> None:
     _import_checking(client)
     _create_goal(db_session)
@@ -566,6 +601,9 @@ def test_run_contribution_automations_writes_a_contribution_once_due(client, db_
     assert len(written) == 1
     assert written[0]["goal_id"] == "emergency-fund"
     assert written[0]["amount"] == pytest.approx(500.0)
+    # The label the pool is denominated in, so `amount` and `currency`
+    # describe the same money (A6) — it used to be the automation's own.
+    assert written[0]["currency"] == "USD"
     assert written[0]["origin"] == "automation"
 
     summary = client.get("/api/v1/accounting/goals/summary", params={"as_of": "2026-06-30"}).json()

@@ -122,6 +122,11 @@ export interface paths {
      *     (`Budget`, `CategoryPattern` both require a `category_id`) — see
      *     `taxonomy.uncategorize_category_ids`.
      *
+     *     "The deleted id(s)" means `_categories_leaving_the_tree`, not the
+     *     ones the request names. Deleting a category's last real subcategory
+     *     also removes the parent's now-pointless "Other" catch-all, and that
+     *     row has references of its own.
+     *
      *     Answers 200 with a body rather than the 204 the other row deletes answer:
      *     this delete has effects beyond the row it names — it cascades to
      *     subcategories, re-derives the survivors' "Other" catch-alls, and
@@ -241,6 +246,10 @@ export interface paths {
      *     only actually call `DELETE /categories/{category_id}` once the user
      *     accepts.
      *
+     *     Counts over `_categories_leaving_the_tree`, the same set the delete
+     *     itself acts on, so the number in the confirmation dialog is the
+     *     number the delete will report having uncategorized.
+     *
      *     Returns
      *     -------
      *     CategoryDeletePreviewResponse
@@ -331,6 +340,12 @@ export interface paths {
      *     is discarded (see `taxonomy.remap_category_ids`) — call
      *     `GET /categories/{category_id}/rename-preview` first to warn about
      *     that before committing to the rename.
+     *
+     *     A merge can also *add* a category: reparenting the merged-away
+     *     category's first real subcategory under the target makes
+     *     `taxonomy.normalize_categories` mint the target's own "Other"
+     *     catch-all. Those rows are written first, additively, because every
+     *     step after them resolves a natural key that has to already exist.
      *
      *     Returns
      *     -------
@@ -495,6 +510,12 @@ export interface paths {
      *     deleted, so a foreign key never briefly points at a row about to
      *     disappear.
      *
+     *     One commit, at the end, covering both writes. This used to be two —
+     *     `remap_tag_ids` committed the repointed join rows itself — so a
+     *     concurrent read could land on a real, half-applied state where the
+     *     postings had already moved and the merged-away tag still existed
+     *     (item D4).
+     *
      *     Returns
      *     -------
      *     TagRenameResponse
@@ -551,6 +572,10 @@ export interface paths {
      *     No version check — see `repositories.interpretation.delete_transfer_rule`'s own
      *     docstring for why deleting an already-gone rule is a plain 404, not a
      *     409: there's nothing left to conflict with.
+     *
+     *     One commit, at the end. This used to be two — the removal, then
+     *     reconciliation's own — so a read could land on a rule that was gone
+     *     while links it no longer implies were still stored (item D4).
      *
      *
      *     Raises
@@ -1223,6 +1248,57 @@ export interface paths {
      *     CurrentExchangeRate
      */
     get: operations['get_current_exchange_rate_api_v1_accounting_exchange_rates_current_get']
+    put?: never
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/v1/accounting/exchange-rates/coverage': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /**
+     * Get Exchange Rate Coverage
+     * @description Report the span of rate history this user's dated flows are actually converted with.
+     *
+     *     Item A5. The flow aggregations — the income statement, budgets, the
+     *     spend curve, goals — convert each row at its own date's rate, and a
+     *     row older than the cache is clamped to the oldest trailing mean on
+     *     file. Nothing on screen said so. This is what a client needs to say
+     *     it: a window starting before `earliest` holds at least one figure
+     *     that is an approximation rather than the rate of its own day.
+     *
+     *     Answers `None`/`None` when nothing is converted, which is exactly
+     *     when `_rates_by_date` returns `None` — `display_currency` and every
+     *     currency this user holds are all the base currency. The condition is
+     *     computed the same way here rather than restated, so the note a client
+     *     draws from this cannot come apart from whether a clamp can happen.
+     *
+     *     The span is read off the cached history rather than off
+     *     `smoothed_rate_series`, which would build the whole per-date table to
+     *     have its min and max taken: that series spans exactly the history's
+     *     own first and last day by construction (see its `pl.date_range`), and
+     *     `rates_into_display` inner-joins the display currency, which has a
+     *     row on every one of those days.
+     *
+     *     Returns
+     *     -------
+     *     RateCoverage
+     *
+     *     Raises
+     *     ------
+     *     HTTPException
+     *         400 if a currency in use has no rate history at all — the same
+     *         refusal every flow endpoint already makes, rather than reporting
+     *         a coverage window for rates that cannot be built.
+     */
+    get: operations['get_exchange_rate_coverage_api_v1_accounting_exchange_rates_coverage_get']
     put?: never
     post?: never
     delete?: never
@@ -3227,6 +3303,14 @@ export interface paths {
     /**
      * Post Run Recurring Additions
      * @description Run every contribution automation whose most recent scheduled occurrence hasn't already run.
+     *
+     *     Every figure on this path is in `models.BASE_CURRENCY`: the pool
+     *     `_unallocated_basis` computes, the `value` each automation names, the
+     *     amounts `run_recurring_additions` returns, and therefore the
+     *     `currency` each written contribution carries. A contribution
+     *     automation can only be created or edited in the base currency (see
+     *     `api_models.BaseCurrencyOnly`), so that chain has no conversion in it
+     *     and no place for one to be forgotten — item A6.
      *
      *     Idempotent by construction: each automation's occurrence writes a
      *     contribution under a deterministic id
@@ -6996,6 +7080,33 @@ export interface components {
       legs: components['schemas']['PostingSplitLeg'][]
     }
     /**
+     * RateCoverage
+     * @description How far back the rate history this user's figures are converted with actually reaches.
+     *
+     *     Response body for `GET /exchange-rates/coverage`, and item A5's whole
+     *     server half. A dated flow older than the cache has no trailing mean of
+     *     its own and is converted at the oldest one on file
+     *     (`ledger.currency.with_converted_amount` clamps it); that clamp is
+     *     right, documented, and until now invisible on screen. This is the one
+     *     fact a client needs to say so: an income statement, budget or spend
+     *     curve whose window starts before `earliest` contains at least one
+     *     figure computed at a rate that is not its own date's.
+     *
+     *     Both fields are `None` when no conversion happens at all — the
+     *     display currency and every currency this user holds are the base
+     *     currency, so every rate is `1.0` on every day and there is nothing to
+     *     clamp. That mirrors `api.dependencies._rates_by_date` returning
+     *     `None` for the same case, and it is what keeps the note silent for a
+     *     single-currency user rather than warning them about arithmetic that
+     *     never ran.
+     */
+    RateCoverage: {
+      /** Earliest */
+      earliest: string | null
+      /** Latest */
+      latest: string | null
+    }
+    /**
      * ReallocationMarker
      * @description A date where a sell funded a same-day buy of a different symbol.
      */
@@ -9194,6 +9305,37 @@ export interface operations {
         }
         content: {
           'application/json': components['schemas']['CurrentExchangeRate']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  get_exchange_rate_coverage_api_v1_accounting_exchange_rates_coverage_get: {
+    parameters: {
+      query?: {
+        display_currency?: 'USD' | 'EUR'
+      }
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['RateCoverage']
         }
       }
       /** @description Validation Error */

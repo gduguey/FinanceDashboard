@@ -177,6 +177,12 @@ def post_tag_rename(
     deleted, so a foreign key never briefly points at a row about to
     disappear.
 
+    One commit, at the end, covering both writes. This used to be two —
+    `remap_tag_ids` committed the repointed join rows itself — so a
+    concurrent read could land on a real, half-applied state where the
+    postings had already moved and the merged-away tag still existed
+    (item D4).
+
     Returns
     -------
     TagRenameResponse

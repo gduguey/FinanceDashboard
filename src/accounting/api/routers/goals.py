@@ -34,7 +34,7 @@ from accounting.ledger.goal_automations import (
     run_withdrawal_automation,
 )
 from accounting.ledger.resolution import resolved_postings
-from accounting.models import CurrencyCode, GoalAutomationDirection
+from accounting.models import BASE_CURRENCY, CurrencyCode, GoalAutomationDirection
 from accounting.models import Goal as DomainGoal
 from accounting.models import GoalAutomation as DomainGoalAutomation
 from accounting.models import GoalContribution as DomainGoalContribution
@@ -837,6 +837,14 @@ def post_run_recurring_additions(
 ) -> list[GoalContribution]:
     """Run every contribution automation whose most recent scheduled occurrence hasn't already run.
 
+    Every figure on this path is in `models.BASE_CURRENCY`: the pool
+    `_unallocated_basis` computes, the `value` each automation names, the
+    amounts `run_recurring_additions` returns, and therefore the
+    `currency` each written contribution carries. A contribution
+    automation can only be created or edited in the base currency (see
+    `api_models.BaseCurrencyOnly`), so that chain has no conversion in it
+    and no place for one to be forgotten — item A6.
+
     Idempotent by construction: each automation's occurrence writes a
     contribution under a deterministic id
     (`f"auto:{automation_id}:{occurrence.isoformat()}"`, see
@@ -895,7 +903,15 @@ def post_run_recurring_additions(
             # Computed in the float analytics projection; re-quantized here
             # because it is about to be stored. See `accounting.ledger.frame`.
             amount=quantize_money(amount),
-            currency=automation.currency or "USD",
+            # `run_recurring_additions` funds from a base-currency pool and
+            # returns base-currency amounts, so the label has to be the base
+            # currency for `amount` and `currency` to describe the same money.
+            # This used to be `automation.currency or "USD"`, which labelled a
+            # USD-derived amount with whatever the automation declared (A6);
+            # `api_models.BaseCurrencyOnly` now refuses the mismatch upstream,
+            # and this reads the constant rather than a field that can only
+            # hold it.
+            currency=BASE_CURRENCY,
             note="Recurring addition",
             origin="automation",
         )

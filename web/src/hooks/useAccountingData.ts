@@ -91,6 +91,7 @@ export {
   useClearLlmSettings,
   useCurrencies,
   useCurrentExchangeRate,
+  useExchangeRateCoverage,
   useExchangeRateHistory,
   useLlmConnectionStatus,
   useLlmSettings,

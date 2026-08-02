@@ -421,7 +421,14 @@ def remap_tag_ids(id_remap: dict[str, str], session: Session, user_id: uuid.UUID
         `old_id -> new_id`, as returned by `store.plan_tag_rename` — a
         no-op when empty.
     session
-        An open database session; `session.commit()` is called on success.
+        An open database session; the caller commits. This used to commit
+        itself, and `POST /tags/{id}/rename` — its only caller — commits
+        again four lines later once `replace_tags` has pruned the
+        merged-away row, so one request published a state in which the
+        postings had already moved to the surviving tag but the old tag
+        still existed (item D4). Flushing instead leaves the rename one
+        transaction, which is what makes that state unobservable rather
+        than merely short-lived.
     user_id
         Whose tags these are.
     """
@@ -461,7 +468,7 @@ def remap_tag_ids(id_remap: dict[str, str], session: Session, user_id: uuid.UUID
         session.query(adb.PostingOverrideTag).filter_by(user_id=user_id, tag_id=old_id).update(
             {"tag_id": new_id}, synchronize_session=False
         )
-    session.commit()
+    session.flush()
 
 
 def load_other_assets(session: Session, user_id: uuid.UUID) -> list[OtherAsset]:

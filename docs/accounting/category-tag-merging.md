@@ -38,6 +38,19 @@ subcategory only ever merges into a sibling under the same
    discarded rather than repointed. The UI shows this in
    a confirmation dialog before the user commits to the real rename.
 
+2b. **The rows the plan *adds*, written first.** A merge can introduce a
+   category as well as remove one: reparenting "Dining"'s first real
+   subcategory under "Food & Drink" makes `normalize_categories` mint
+   `expense:food-drink:other`, and `id_remap` names that id as the
+   successor of "Dining"'s own "Other". Everything from step 3 onwards
+   resolves a successor natural key through `db.base.ids_by_natural_key`,
+   which **subscripts** — a key with no row raises rather than resolving
+   to `None` — so the added rows go in before any of them, through
+   `replace_categories(..., prune=False)`. The set is the difference
+   between the planned tree and the stored one, not anything the request
+   names. Item A9: without it, merging into a target that had no
+   subcategories yet was a 500.
+
 3. **`taxonomy.remap_category_ids`** — the three collections
    that name a category and aren't the tree itself (loaded together as a
    `taxonomy.CategoryReferences`, one repository `load_*` each) get every
@@ -123,17 +136,26 @@ subcategory only ever merges into a sibling under the same
 (`accounting.api.routers.categories.delete_category`). Deleting "Dining" outright, not merging it into
 anything.
 
-1. **`taxonomy.category_ids_to_delete`** — a subcategory's delete
-   never cascades (it has none of its own); a top-level category's delete
-   takes every one of its subcategories down with it. Returns the full set
-   of ids being removed, e.g. `{"expense:dining"}`, or
-   `{"expense:dining", "expense:dining:fast-food"}` if "Dining" had a
-   subcategory.
+1. **`_categories_leaving_the_tree`** — `taxonomy.category_ids_to_delete`
+   answers what the *request* names: a subcategory's delete never
+   cascades (it has none of its own); a top-level category's delete takes
+   every one of its subcategories down with it, e.g. `{"expense:dining"}`
+   or `{"expense:dining", "expense:dining:fast-food"}`. Then
+   `normalize_categories` removes **one more row nobody asked about** — a
+   parent left with no real subcategory loses its "Other" catch-all,
+   since "Other" alongside nothing is meaningless. The set every step
+   below works from is the difference between the tree before and the
+   tree after, so it includes that catch-all. Item A10: it used to work
+   from the request's set instead, and pruning a still-referenced
+   catch-all was an `IntegrityError` and a 500 (a budget), or a delete of
+   raw import provenance the foreign key refuses (a posting).
 
 2. **`GET /categories/{category_id}/delete-preview`** — counts
    how many raw ledger postings currently carry any id from step 1 as
    their own `category_id` or `subcategory_id`
-   (`_posting_count_for_categories`), without deleting anything.
+   (`_posting_count_for_categories`), without deleting anything. Over the
+   same set the delete acts on, so the dialog's number and the one the
+   delete reports are the same number.
    The frontend shows this count in a confirmation dialog ("N transactions
    will become uncategorized") only when it's greater than zero — deleting
    a category with no postings just happens immediately, no popup.

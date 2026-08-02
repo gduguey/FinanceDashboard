@@ -64,6 +64,7 @@ import type {
   PostingSortField,
   PostingSplitLeg,
   ProjectionPoint,
+  RateCoverage,
   RawPosting,
   SimulatorScenario,
   SimulatorScenarioCreate,
@@ -181,6 +182,8 @@ export const accountingApi = {
     request<CurrentExchangeRate>(`/exchange-rates/current${queryString({ currency })}`),
   exchangeRateHistory: (currency: string) =>
     request<ExchangeRateHistoryPoint[]>(`/exchange-rates/history${queryString({ currency })}`),
+  exchangeRateCoverage: (displayCurrency: string) =>
+    request<RateCoverage>(`/exchange-rates/coverage${queryString({ display_currency: displayCurrency })}`),
   createCategory: (category: CategoryCreate) => request<Category>('/categories', jsonInit('POST', category)),
   createSubcategory: (parentId: string, subcategory: SubcategoryCreate) =>
     request<Category>(`/categories/${encodeURIComponent(parentId)}/subcategories`, jsonInit('POST', subcategory)),

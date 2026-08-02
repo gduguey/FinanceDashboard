@@ -113,6 +113,7 @@ export type PaystubReconciliationResult = components['schemas']['PaystubReconcil
 export type AccountingStore = components['schemas']['AccountingStoreResponse']
 export type CurrentExchangeRate = components['schemas']['CurrentExchangeRate']
 export type ExchangeRateHistoryPoint = components['schemas']['ExchangeRateHistoryPoint']
+export type RateCoverage = components['schemas']['RateCoverage']
 export type DetectedAccount = components['schemas']['DetectedAccount']
 export type ImportResult = components['schemas']['ImportResult']
 export type CanonicalImportResult = components['schemas']['CanonicalImportResult']

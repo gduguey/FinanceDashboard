@@ -132,6 +132,11 @@ def post_transfer_rule(
     raw_ledger = load_ledger(session, user_id)
     upsert_transfer_rule(rule, session, user_id)
     reconcile_and_persist_rule_links(raw_ledger, session, user_id)
+    # One commit for the rule and the links it implies. It used to be two —
+    # `upsert_transfer_rule` committed, then reconciliation committed again if
+    # it found anything — so a read could land on a rule that existed with none
+    # of its links yet (item D4).
+    session.commit()
     if existing is None:
         location_of(http_request, response, "get_transfer_rule", rule_id=rule_id)
     else:
@@ -179,8 +184,9 @@ def patch_transfer_rule(
     updated = update_transfer_rule(session, user_id, rule, request.expected_version)
     if updated is None:
         raise HTTPException(status_code=404, detail=f"Transfer rule {rule_id!r} not found")
-    session.commit()
     reconcile_and_persist_rule_links(raw_ledger, session, user_id)
+    # See `post_transfer_rule`: the edit and the links it implies are one commit.
+    session.commit()
     return TransferRule.from_domain(updated)
 
 
@@ -203,6 +209,10 @@ def delete_transfer_rule_route(
     docstring for why deleting an already-gone rule is a plain 404, not a
     409: there's nothing left to conflict with.
 
+    One commit, at the end. This used to be two — the removal, then
+    reconciliation's own — so a read could land on a rule that was gone
+    while links it no longer implies were still stored (item D4).
+
 
     Raises
     ------
@@ -220,5 +230,6 @@ def delete_transfer_rule_route(
     deleted = delete_transfer_rule(session, user_id, rule_id)
     if not deleted:
         raise HTTPException(status_code=404, detail=f"Transfer rule {rule_id!r} not found")
-    session.commit()
     reconcile_and_persist_rule_links(raw_ledger, session, user_id)
+    # See `post_transfer_rule`: the removal and the re-proposal are one commit.
+    session.commit()
