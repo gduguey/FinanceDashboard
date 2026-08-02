@@ -51,26 +51,28 @@ Item C8. Every bound was originally derived while this module's own
 `ANALYZE` was silently doing nothing (B5), so it described a query planned
 from absent statistics; PR D replaced the *measurements* and left the
 *bounds* alone, deliberately loose, pending enough CI runs to form a
-distribution rather than a datapoint. This is that re-derivation, from five
+distribution rather than a datapoint. This is that re-derivation, from six
 consecutive CI runs of this job on the current code — the slowest of them
 roughly 1.4x the fastest, which is the runner variance any bound here has to
-absorb.
+absorb. The sixth ran under the tightened bounds and passed every one of
+them; it also nudged three of the bands below, which is why they are quoted
+as ranges and re-read rather than trusted.
 
 | measurement | 2k tenant | 10k tenant | ratio |
 |-------------|-----------|------------|-------|
 | `GET /postings`, 200 | 31-45 ms | 61-92 ms | 1.93-2.08x |
 | `GET /ledger/export`, 5,000 | 88-131 ms | 119-182 ms | 1.34-1.38x |
-| deep offset (0 -> 15,000) | 121-184 ms | 147-214 ms | 1.16-1.23x |
+| deep offset (0 -> 15,000) | 121-184 ms | 147-214 ms | 1.16-1.26x |
 | filtered + sorted page, 200 | 30-43 ms | 53-80 ms | 1.75-1.84x |
-| drilldown page, 50 | 25-36 ms | 52-79 ms | 2.04-2.21x |
-| `category-totals`, whole history | 85-124 ms | 412-617 ms | 4.83-5.22x |
+| drilldown page, 50 | 25-36 ms | 52-79 ms | 2.04-2.23x |
+| `category-totals`, whole history | 85-124 ms | 412-617 ms | 4.83-5.32x |
 | `POST /postings/matching-ids` | 13-18 ms | 22-38 ms | 1.73-2.00x |
 | `POST /postings/validate-pending` | 61-86 ms | 255-350 ms | 3.97-4.20x |
-| `POST .../pattern-suggest-category/bulk` | 17-24 ms | 33-50 ms | 1.95-2.23x |
+| `POST .../pattern-suggest-category/bulk` | 17-24 ms | 33-50 ms | 1.95-2.33x |
 | cold rebuild, then a page | 524-799 ms | 2,201-3,120 ms | 3.85-4.20x |
 | one override, then a page | 63-91 ms | 93-130 ms | 1.21-1.51x |
 | `GET /postings/months` | — | 15-25 ms | — |
-| category merge, then a page (C9) | — | 1,070 ms | — |
+| category merge, then a page (C9) | — | 1,070-1,419 ms | — |
 
 and, for the page sizes C6 used to fail on, 70-99 ms at 400, 100-145 ms at
 1,000 and 415-645 ms at `PAGE_LIMIT_MAX`.
@@ -197,10 +199,10 @@ filtered page, the drilldown, and the page after a single override. All five
 are *sub*-linear when healthy — a page is bounded, so only their fixed costs
 grow — where linear would be 5.0 and quadratic 25.0.
 
-Worst observed across five CI runs, by path: **2.21x** (drilldown), 2.08x
+Worst observed across six CI runs, by path: **2.23x** (drilldown), 2.08x
 (postings page), 1.84x (filtered page), 1.51x (one override), 1.38x
 (export). This is 1.6x the worst of those, and the per-path spread across
-those runs is under 8%, so the margin is wide relative to the noise it has
+those runs is under 10%, so the margin is wide relative to the noise it has
 to absorb rather than merely wide.
 
 Eight until item C8, which was a bound derived from nothing: it was set
@@ -225,8 +227,8 @@ construction (known gap C5) — and an unfiltered bulk action matches every
 row by definition, so for both of them linear, 5.0, is what healthy looks
 like and sub-linear is not on offer.
 
-Worst observed across five CI runs: **5.22x** for `category-totals`, 4.20x
-for `validate-pending`, 2.23x and 2.00x for the other two bulk actions. Note
+Worst observed across six CI runs: **5.32x** for `category-totals`, 4.20x
+for `validate-pending`, 2.33x and 2.00x for the other two bulk actions. Note
 that the first sits *above* the nominal 5.0, which is why this keeps more
 proportional headroom than `MAX_SCALING_FACTOR` does: 1.7x the worst
 observed, against 1.6x there.
@@ -244,7 +246,7 @@ MAX_DEEP_OFFSET_FACTOR = 2.5
 free; it is asserting that walking to the end of the collection stays a
 small constant multiple rather than becoming the dominant cost of a backup.
 
-Worst observed across five CI runs: **1.23x**, in a band of 1.16-1.23 — the
+Worst observed across six CI runs: **1.26x**, in a band of 1.16-1.26 — the
 tightest distribution in this module, because both figures come from the
 same tenant in the same test and the runner's speed divides out almost
 exactly. Two and a half is 2.0x that, the most headroom any bound here
@@ -255,14 +257,14 @@ degrades gradually rather than stepping.
 MAX_POSTINGS_PAGE_SECONDS = 1.0
 """Wall-clock ceiling for one 200-transaction page of `GET /postings` over a 10k-transaction ledger.
 
-Worst observed across five CI runs: **87 ms**, in a band of 61-87. One
+Worst observed across six CI runs: **87 ms**, in a band of 61-87. One
 second is 11x that.
 
 Three seconds before item C8, which was roughly 45x and defensible only
 because nobody had the CI numbers. Every wall clock in this module now sits
 at about 8-12x its worst observed CI figure, which is the multiple these
 runners justify — two-core containers with no I/O isolation, and a measured
-1.4x spread between the fastest and slowest of the five runs.
+1.4x spread between the fastest and slowest of the six runs.
 
 That multiple is not timidity and it is not precision either. A gate that
 flaps gets deleted, which leaves less protection than a loose one; the
@@ -280,7 +282,7 @@ what it is not allowed to do is fail. The failure this guards against
 produced a 500 at the 15 s `statement_timeout`, not a slow answer, so any
 ceiling comfortably under that bound catches it.
 
-Worst observed across five CI runs: **99 ms at 400, 145 ms at 1,000 and
+Worst observed across six CI runs: **99 ms at 400, 145 ms at 1,000 and
 645 ms at `PAGE_LIMIT_MAX`**. Four seconds is 6.2x the largest — less
 headroom than the other wall clocks carry, and deliberately so: a
 `PAGE_LIMIT_MAX` page is the one measurement here that legitimately costs
@@ -297,7 +299,7 @@ lose: the filter runs over `accounting.resolved_postings`, and a predicate
 that stopped being expressible there — a join back to the raw ledger, a
 per-row lookup — would turn a page into a scan of history again.
 
-Worst observed across five CI runs: **80 ms**, in a band of 53-80 — within
+Worst observed across six CI runs: **80 ms**, in a band of 53-80 — within
 noise of the unfiltered page, because the filter is an indexed read over
 stored values rather than anything the request computes. One second is 12x
 that, and equal to `MAX_POSTINGS_PAGE_SECONDS` because the two measure the
@@ -313,8 +315,8 @@ a sentinel that means "is null", against a date window. C6 was a plan flip
 caused by exactly that — an array parameter's effect on a cost estimate,
 which is invisible until an array is what you pass.
 
-Worst observed across five CI runs: **79 ms**, in a band of 52-79, scaling
-at 2.04-2.21x — the steepest of the bounded reads, and still nowhere near
+Worst observed across six CI runs: **79 ms**, in a band of 52-79, scaling
+at 2.04-2.23x — the steepest of the bounded reads, and still nowhere near
 linear, so the arrays cost nothing structural. One second is 13x that.
 """
 
@@ -325,7 +327,7 @@ One row per month the user has ever transacted in — tens of entries for a
 decade — but computed by grouping every resolved posting, so it is linear in
 the ledger and worth a bound.
 
-Worst observed across five CI runs: **25 ms**, in a band of 15-25. Half a
+Worst observed across six CI runs: **25 ms**, in a band of 15-25. Half a
 second is 20x that, the widest multiple in this module, because it is also
 the smallest absolute figure and therefore the one most easily doubled by a
 runner's bad moment rather than by a regression.
@@ -349,7 +351,7 @@ Python to obtain four columns the projection already stores — a cost the
 cutover would have made trivial to trigger, since the same button now covers
 every page rather than the rows one screen had rendered.
 
-Worst observed across five CI runs, with an empty filter — the widest set
+Worst observed across six CI runs, with an empty filter — the widest set
 any of them can resolve: **350 ms** for `validate-pending` (which loads an
 override row per matched id, and is the only one of the three that is not
 simply a projection query), 50 ms for the pattern suggester and 38 ms for
@@ -367,7 +369,7 @@ The cost the drain-on-read design concentrates rather than removes: a wide
 change — a transfer rule, an account, a category — enqueues every
 transaction, and the next read pays for a full recompute before it answers.
 
-Worst observed across five CI runs: **3,120 ms** for the 10k tenant,
+Worst observed across six CI runs: **3,120 ms** for the 10k tenant,
 request included, in a band of 2,201-3,120 — the widest spread of any
 measurement here at 1.42x, which is why this keeps proportionally more
 headroom than the page bounds do. The 2k tenant runs 524-799 ms.
@@ -390,7 +392,7 @@ MAX_REBUILD_SCALING_FACTOR = 8.0
 """How much slower the big tenant's rebuild may be than the small tenant's, for 5x the ledger.
 
 A rebuild is linear work by construction — every transaction is resolved
-once — so 5.0 is what healthy looks like. Worst observed across five CI
+once — so 5.0 is what healthy looks like. Worst observed across six CI
 runs: **4.20x**, in a band of 3.85-4.20, i.e. reliably a little *under*
 linear, because the fixed cost of one drain is amortised over five times as
 many transactions. Eight is 1.9x the worst of those; quadratic would be 25.
@@ -407,7 +409,7 @@ showed up as a timeout.
 MAX_EXPORT_PAGE_SECONDS = 1.5
 """Wall-clock ceiling for one 5,000-posting page of `GET /ledger/export`.
 
-Worst observed across five CI runs: **182 ms**, in a band of 119-182. One
+Worst observed across six CI runs: **182 ms**, in a band of 119-182. One
 and a half seconds is 8.2x that. The export is the cheaper path by
 construction — it applies no overlay — so its ceiling is lower than the
 postings page's even though its page covers more rows. Two seconds before
@@ -438,8 +440,8 @@ repeated; what it concluded still holds for the reason it gave — the cost
 of this endpoint is reading and resolving the ledger, which C5 owns — and
 its scaling ratio is 3.0-3.2x here, well inside linear.
 
-Worst observed across five CI runs: **617 ms**, in a band of 412-617, at
-4.83-5.22x. Five seconds is 8.1x that, down from six on a single pre-B5
+Worst observed across six CI runs: **617 ms**, in a band of 412-617, at
+4.83-5.32x. Five seconds is 8.1x that, down from six on a single pre-B5
 sample of 656 ms (item C8).
 """
 
@@ -925,10 +927,10 @@ early and `load_ledger`'s two taxonomy joins find nothing. A ledger that
 actually uses categories is dearer to resolve per transaction, which is
 exactly the ledger this saving matters on.
 
-Worst — and so far only — CI figure: **1,070 ms**, on the fastest of the
-five runs item C8 derived from. Eight seconds is 7.5x that and 4.4x the
-local 1,830 ms, keeping the extra headroom until this measurement has a
-distribution of its own rather than one sample.
+Worst observed across the two CI runs that have carried this case:
+**1,419 ms**, against 1,070 ms on the faster. Eight seconds is 5.6x that and
+4.4x the local 1,830 ms, keeping more headroom than the other wall clocks
+until this measurement has a distribution of its own.
 
 Deliberately a wall clock and not a ratio: the work is proportional to the
 *matched* set rather than to the ledger, so the small tenant says nothing
