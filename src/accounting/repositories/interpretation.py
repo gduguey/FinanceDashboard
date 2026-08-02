@@ -443,13 +443,19 @@ def upsert_transfer_rule(rule: TransferRule, session: Session, user_id: uuid.UUI
     rule
         The rule to persist; `rule.rule_id` names the row.
     session
-        An open database session; `session.commit()` is called on success.
+        An open database session; the caller commits. This used to commit
+        itself, and `POST /transfer-rules` then ran
+        `ledger.transfers.reconcile_and_persist_rule_links`, which
+        committed again whenever it found a link — so a create published
+        the rule first and the links it implies second, with a read able
+        to land between them (item D4). The entry names `DELETE` alone;
+        this is the same window on the create, one layer down.
     user_id
         Whose rule this is.
     """
     written_ids = upsert_transfer_rules(session, user_id, [rule])
     _sync_rule_exclusions(session, user_id, written_ids[rule.rule_id], list(rule.excluded_transaction_ids))
-    session.commit()
+    session.flush()
 
 
 def update_transfer_rule(

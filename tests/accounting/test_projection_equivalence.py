@@ -666,34 +666,6 @@ def test_a_cascade_that_removes_a_transaction_removes_its_projection_rows(client
     assert stored_before.count() == 0, "the deleted transaction's rows survived the drain"
 
 
-def _drain_between_the_two_commits(monkeypatch, module, function_name: str, db_session) -> list[int]:
-    """Make a read land in the window between a router's first commit and its second.
-
-    Wraps `module.function_name` so that a drain runs immediately after it
-    returns — which, for both routers this is used on, is immediately after
-    a `session.commit()` that has published half the change. That is the
-    interleaving a real concurrent `GET /postings` would produce, and the
-    only way to observe it deterministically in a single-threaded test.
-
-    Returns
-    -------
-    list[int]
-        How many transactions each interleaved drain recomputed, so a test
-        can assert the window was actually entered rather than silently
-        skipped.
-    """
-    drained: list[int] = []
-    original = getattr(module, function_name)
-
-    def _wrapped(*args, **kwargs):
-        result = original(*args, **kwargs)
-        drained.append(drain(db_session, DEFAULT_USER_ID))
-        return result
-
-    monkeypatch.setattr(module, function_name, _wrapped)
-    return drained
-
-
 def _count_commits(monkeypatch) -> list[int]:
     """Count `Session.commit()` calls, so a test can assert a request publishes exactly one state.
 
@@ -750,23 +722,76 @@ def test_a_tag_rename_publishes_one_state_and_not_two(client, seeded_ledger, db_
     assert_projection_equals_the_pipeline(db_session)
 
 
-def test_a_rule_delete_self_heals_when_a_read_lands_between_its_two_commits(
-    client, seeded_ledger, db_session, monkeypatch
-) -> None:
-    """`DELETE /transfer-rules/{id}` commits the rule removal, then reconciliation commits again.
+def test_a_rule_delete_publishes_one_state_and_not_two(client, seeded_ledger, db_session, monkeypatch) -> None:
+    """`DELETE /transfer-rules/{id}` used to commit the removal, then reconciliation committed again (item D4).
 
-    Same property as the tag rename, on the other router that does it: the
-    reconciliation pass writes `transfer_links`, which is trigger-covered,
-    so whatever the interleaved read cached is re-dirtied and corrected.
+    Same property as the tag rename, on the other router that had it: a
+    read landing between the two saw a rule that was gone while links it
+    no longer implies were still stored.
+    `ledger.transfers.reconcile_and_persist_rule_links` flushes now and
+    the handler owns the only commit.
     """
-    from accounting.api.routers import transfer_rules as rules_router  # noqa: PLC0415 — patched per test
-
     assert_projection_equals_the_pipeline(db_session)
-    drained = _drain_between_the_two_commits(monkeypatch, rules_router, "delete_transfer_rule", db_session)
+    commits = _count_commits(monkeypatch)
+    commits[0] = 0
 
     deleted = client.delete(f"{ACCOUNTING}/transfer-rules/{seeded_ledger['rule_id']}")
-    assert deleted.status_code == 204, deleted.text
-    assert drained, "the interleaved read never ran"
-    assert drained[0] > 0, "the interleaved read did not land inside the window this test exists for"
 
+    assert deleted.status_code == 204, deleted.text
+    assert commits[0] == 1, f"the delete published {commits[0]} states; the rule and its links must be one transaction"
+    assert_projection_equals_the_pipeline(db_session)
+
+
+def test_a_rule_write_that_actually_links_something_publishes_one_state(
+    client, seeded_ledger, db_session, monkeypatch
+) -> None:
+    """The create and the edit had the same two commits, and only the linking path reaches the second one.
+
+    Item D4's entry names `DELETE` alone. `POST /transfer-rules` commits
+    inside `repositories.interpretation.upsert_transfer_rule` and `PATCH`
+    committed in the handler, and both then called
+    `reconcile_and_persist_rule_links`, which committed again — but only
+    when it found a link. A rule matching nothing therefore looked
+    single-commit and hid the window, which is why this case builds a
+    rule that genuinely pairs two transactions.
+    """
+    assert_projection_equals_the_pipeline(db_session)
+    # A pair the seeded fixture does not already link by hand: one outbound leg
+    # on checking and its opposite on savings, two days apart. Without a pair a
+    # rule can safely resolve, reconciliation finds nothing and never reaches
+    # the commit this case exists to count.
+    _import(client, seeded_ledger["checking"], "2026-04-01,CARD AUTOPAY,-140.00\n")
+    _import(client, seeded_ledger["savings"], "2026-04-02,AUTOPAY RECEIVED,140.00\n")
+    body = {
+        "description_contains": "CARD AUTOPAY",
+        "account_id": seeded_ledger["checking"]["account_id"],
+        "counterparty_account_id": seeded_ledger["savings"]["account_id"],
+        "priority": 1,
+        "description": "moves money between my own accounts",
+    }
+
+    commits = _count_commits(monkeypatch)
+    commits[0] = 0
+    created = client.post(f"{ACCOUNTING}/transfer-rules", json=body)
+    created_commits = commits[0]
+
+    assert created.status_code == 201, created.text
+    rule_links = [link for link in client.get(f"{ACCOUNTING}/store").json()["transfer_links"] if link["rule_id"]]
+    assert rule_links, "the rule linked nothing, so this never reached the path that used to commit twice"
+    assert created_commits == 1, f"the create published {created_commits} states"
+
+    commits[0] = 0
+    patched = client.patch(
+        f"{ACCOUNTING}/transfer-rules/{created.json()['rule_id']}",
+        json={
+            **body,
+            "priority": 2,
+            "active": True,
+            "excluded_transaction_ids": [],
+            "expected_version": created.json()["version"],
+        },
+    )
+
+    assert patched.status_code == 200, patched.text
+    assert commits[0] == 1, f"the edit published {commits[0]} states"
     assert_projection_equals_the_pipeline(db_session)

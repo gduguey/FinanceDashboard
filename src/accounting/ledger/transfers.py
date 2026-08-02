@@ -373,13 +373,15 @@ def reconcile_and_persist_rule_links(
         ledger during an import/rebuild, or a fresh, unscoped `load_ledger`
         call when reconciling after a rule change.
     session
-        An open database session; `session.commit()` is called only if at
-        least one new link was found. Every caller of this function commits
-        itself first (via `_write_ledger` or a scoped repository write,
-        persisting whatever it just changed), so this
-        function's own first read needs Row-Level Security re-scoped — see
-        `db.session.set_rls_user`'s own docstring for why that mid-request
-        commit alone breaks it.
+        An open database session; the caller commits. This used to commit
+        itself whenever it found a link, which made each of the three
+        transfer-rule writes two transactions — the rule change, then the
+        links it implies — with a real, half-applied state visible
+        between them (item D4). `set_rls_user` below stays regardless:
+        the import and rebuild callers *do* commit before reaching here
+        (via `_write_ledger`), and a mid-request commit resets the
+        variable every Row-Level Security policy reads — see
+        `db.session.set_rls_user`'s own docstring for why.
     user_id
         Whose rules and ledger this is.
 
@@ -399,5 +401,5 @@ def reconcile_and_persist_rule_links(
     if not new_links:
         return []
     insert_transfer_links(session, user_id, new_links)
-    session.commit()
+    session.flush()
     return new_links
