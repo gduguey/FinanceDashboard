@@ -38,6 +38,19 @@ subcategory only ever merges into a sibling under the same
    discarded rather than repointed. The UI shows this in
    a confirmation dialog before the user commits to the real rename.
 
+2b. **The rows the plan *adds*, written first.** A merge can introduce a
+   category as well as remove one: reparenting "Dining"'s first real
+   subcategory under "Food & Drink" makes `normalize_categories` mint
+   `expense:food-drink:other`, and `id_remap` names that id as the
+   successor of "Dining"'s own "Other". Everything from step 3 onwards
+   resolves a successor natural key through `db.base.ids_by_natural_key`,
+   which **subscripts** — a key with no row raises rather than resolving
+   to `None` — so the added rows go in before any of them, through
+   `replace_categories(..., prune=False)`. The set is the difference
+   between the planned tree and the stored one, not anything the request
+   names. Item A9: without it, merging into a target that had no
+   subcategories yet was a 500.
+
 3. **`taxonomy.remap_category_ids`** — the three collections
    that name a category and aren't the tree itself (loaded together as a
    `taxonomy.CategoryReferences`, one repository `load_*` each) get every

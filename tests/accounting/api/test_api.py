@@ -2474,6 +2474,110 @@ def test_category_rename_merge_leaves_the_raw_ledger_carrying_the_imported_categ
     assert resolved_leg["category_id"] == "expense:food"
 
 
+def _import_two_bare_categories(client, account) -> tuple[dict, dict]:
+    """Mint two top-level categories the default tree does not have, each with no subcategory.
+
+    Through the importer rather than `POST /categories`, because that is
+    the only route that mints a top-level category the default tree has
+    never heard of — and "neither side has a subcategory yet" is the
+    starting state item A9 needs.
+
+    Returns
+    -------
+    tuple[dict, dict]
+        The `Nourriture` and `Comida` categories, as `GET /store` reports them.
+    """
+    csv_text = (
+        "Date,Description,Amount,Category\n2026-06-30,Store,-42.50,Nourriture\n2026-06-29,Other Store,-10.00,Comida\n"
+    )
+    client.post(
+        "/api/v1/accounting/import/canonical",
+        files={"file": ("generic.csv", csv_text, "text/csv")},
+        data={
+            "institution": "Generic Bank",
+            "account_kind": "checking",
+            "account_id": account["account_id"],
+            "account_name": "Generic Checking",
+        },
+    )
+    categories = client.get("/api/v1/accounting/store").json()["categories"].values()
+    return (
+        next(c for c in categories if c["name"] == "Nourriture"),
+        next(c for c in categories if c["name"] == "Comida"),
+    )
+
+
+def test_category_rename_merges_into_a_target_that_has_no_subcategories_yet(client) -> None:
+    """Item A9: the merge mints the target's "Other" catch-all, and used to resolve it before creating it.
+
+    Reparenting `Nourriture`'s only real subcategory under `Comida` makes
+    `taxonomy.normalize_categories` give `Comida` an "Other" of its own,
+    and `plan_category_rename` maps `Nourriture`'s own "Other" onto that
+    brand-new id. `retire_categories` resolves every successor through
+    `ids_by_natural_key`, which subscripts rather than `.get`s, so before
+    the additive write at the top of the handler this raised
+    `UnknownNaturalKeyError: accounting.categories has no row with natural
+    key 'expense:comida:other'` — a 500 on a plain rename.
+    """
+    account = _create_account(client, name="Generic Checking", kind="checking", institution="Generic Bank")
+    nourriture, comida = _import_two_bare_categories(client, account)
+    client.post(
+        f"/api/v1/accounting/categories/{nourriture['category_id']}/subcategories",
+        json={"name": "Restaurants", "color": "#222222"},
+    )
+
+    response = client.post(
+        f"/api/v1/accounting/categories/{nourriture['category_id']}/rename", json={"name": comida["name"]}
+    )
+
+    assert response.status_code == 200, response.text
+    categories = response.json()["categories"]
+    assert response.json()["merged"] is True
+    assert nourriture["category_id"] not in categories
+    # Reparented, not re-keyed: a subcategory with no same-named sibling under
+    # the target keeps its own id and only changes parent (see
+    # `taxonomy.plan_category_rename`), which is why it is not in `id_remap`
+    # and why the catch-all is the only new row this merge needs.
+    reparented = categories[f"{nourriture['category_id']}:restaurants"]
+    assert reparented["parent_category_id"] == comida["category_id"]
+    assert f"{comida['category_id']}:other" in categories
+
+
+def test_category_rename_merge_repoints_a_budget_filed_under_the_minted_catch_all(client) -> None:
+    """The same A9 exposure one step earlier — `replace_budgets` resolves the successor too.
+
+    `_write_category_references` runs before `retire_categories`, so a
+    budget filed under the merged-away category's "Other" is repointed
+    onto the target's not-yet-existing one and resolved there first. The
+    minimal reproduction never reached it because it had no such row.
+    """
+    account = _create_account(client, name="Generic Checking", kind="checking", institution="Generic Bank")
+    nourriture, comida = _import_two_bare_categories(client, account)
+    client.post(
+        f"/api/v1/accounting/categories/{nourriture['category_id']}/subcategories",
+        json={"name": "Restaurants", "color": "#222222"},
+    )
+    budget = client.post(
+        "/api/v1/accounting/budgets",
+        json={
+            "category_id": nourriture["category_id"],
+            "subcategory_id": f"{nourriture['category_id']}:other",
+            "amount": "50.00",
+            "currency": "USD",
+            "month": None,
+        },
+    )
+    assert budget.status_code == 201, budget.text
+
+    response = client.post(
+        f"/api/v1/accounting/categories/{nourriture['category_id']}/rename", json={"name": comida["name"]}
+    )
+
+    assert response.status_code == 200, response.text
+    budgets = client.get("/api/v1/accounting/store").json()["budgets"]
+    assert [b["subcategory_id"] for b in budgets] == [f"{comida['category_id']}:other"]
+
+
 def test_category_rename_merge_repoints_a_manual_override(client) -> None:
     account = _create_account(client, name="Generic Checking", kind="checking", institution="Generic Bank")
     csv_text = "Date,Description,Amount,Category\n2026-06-30,Store,-42.50,Nourriture\n"

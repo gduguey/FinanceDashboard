@@ -502,6 +502,12 @@ def post_category_rename(
     `GET /categories/{category_id}/rename-preview` first to warn about
     that before committing to the rename.
 
+    A merge can also *add* a category: reparenting the merged-away
+    category's first real subcategory under the target makes
+    `taxonomy.normalize_categories` mint the target's own "Other"
+    catch-all. Those rows are written first, additively, because every
+    step after them resolves a natural key that has to already exist.
+
     Returns
     -------
     CategoryRenameResponse
@@ -519,6 +525,22 @@ def post_category_rename(
         raise HTTPException(status_code=404, detail=f"Category {category_id!r} not found")
 
     categories, id_remap = plan_category_rename(existing_categories, category_id, request.name)
+
+    # Every row the plan *introduces*, written before anything resolves one of
+    # them. A merge can mint a category that has no row yet — reparenting the
+    # first real subcategory under the target makes `normalize_categories` give
+    # the target its own "Other" catch-all — and `id_remap` names that new id as
+    # a successor. Both steps below resolve successor natural keys through
+    # `ids_by_natural_key`, which subscripts on purpose, so a successor with no
+    # row is an `UnknownNaturalKeyError` rather than a silent `None`. Taken from
+    # the difference between the planned tree and the stored one rather than
+    # from the request, because the request never names the catch-all.
+    replace_categories(
+        session,
+        user_id,
+        [category for new_id, category in categories.items() if new_id not in existing_categories],
+        prune=False,
+    )
 
     # Repointed budgets, category patterns and posting splits are written by
     # their own repositories, before `replace_categories` below prunes the
