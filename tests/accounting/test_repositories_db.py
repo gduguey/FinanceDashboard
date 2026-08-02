@@ -45,8 +45,8 @@ from accounting.repositories.accounts import (
     load_manual_transfers,
     load_opening_balances,
     replace_accounts,
-    replace_opening_balances,
     update_account_fields,
+    upsert_opening_balance,
 )
 from accounting.repositories.planning import (
     insert_goal,
@@ -74,17 +74,14 @@ from accounting.repositories.interpretation import (
     load_transfer_links,
     load_transfer_rules,
     replace_category_patterns,
-    replace_posting_merges,
     replace_posting_splits,
-    replace_rule_exclusions,
-    replace_transfer_rules,
-    save_overrides,
     save_overrides_for_postings,
     save_posting_split,
     undismiss_suggestion,
     update_transfer_rule,
     upsert_posting_merge,
     upsert_transfer_rule,
+    upsert_transfer_rules,
 )
 from accounting.repositories.taxonomy import (
     load_categories,
@@ -214,7 +211,9 @@ def test_remap_tag_ids_deletes_the_old_row_when_the_posting_already_has_the_targ
 def test_remap_tag_ids_repoints_a_tag_ids_override(db_session: Session, test_user_id: uuid.UUID) -> None:
     _seed_tags(db_session, test_user_id, ("tag:trip", "Trip"), ("tag:vacation", "Vacation"), ("tag:other", "Other"))
     _seed_posting(db_session, test_user_id, transaction_id="t1", posting_id="p1")
-    save_overrides({"p1": ManualOverride(tag_ids=["tag:trip", "tag:other"])}, db_session, user_id=test_user_id)
+    save_overrides_for_postings(
+        ["p1"], {"p1": ManualOverride(tag_ids=["tag:trip", "tag:other"])}, db_session, user_id=test_user_id
+    )
 
     remap_tag_ids({"tag:trip": "tag:vacation"}, db_session, user_id=test_user_id)
 
@@ -229,7 +228,9 @@ def test_remap_tag_ids_deletes_the_old_override_row_when_the_posting_already_has
 ) -> None:
     _seed_tags(db_session, test_user_id, ("tag:trip", "Trip"), ("tag:vacation", "Vacation"))
     _seed_posting(db_session, test_user_id, transaction_id="t1", posting_id="p1")
-    save_overrides({"p1": ManualOverride(tag_ids=["tag:trip", "tag:vacation"])}, db_session, user_id=test_user_id)
+    save_overrides_for_postings(
+        ["p1"], {"p1": ManualOverride(tag_ids=["tag:trip", "tag:vacation"])}, db_session, user_id=test_user_id
+    )
 
     remap_tag_ids({"tag:trip": "tag:vacation"}, db_session, user_id=test_user_id)
 
@@ -237,10 +238,12 @@ def test_remap_tag_ids_deletes_the_old_override_row_when_the_posting_already_has
     assert reloaded.tag_ids == ["tag:vacation"]
 
 
-def test_save_overrides_rejects_a_tag_id_that_does_not_exist(db_session: Session, test_user_id: uuid.UUID) -> None:
+def test_saving_an_override_rejects_a_tag_id_that_does_not_exist(db_session: Session, test_user_id: uuid.UUID) -> None:
     _seed_posting(db_session, test_user_id, transaction_id="t1", posting_id="p1")
     with pytest.raises(UnknownNaturalKeyError):
-        save_overrides({"p1": ManualOverride(tag_ids=["tag:does-not-exist"])}, db_session, user_id=test_user_id)
+        save_overrides_for_postings(
+            ["p1"], {"p1": ManualOverride(tag_ids=["tag:does-not-exist"])}, db_session, user_id=test_user_id
+        )
 
 
 def test_deleting_a_tag_row_cascades_and_clears_a_posting_override_tag(
@@ -248,7 +251,7 @@ def test_deleting_a_tag_row_cascades_and_clears_a_posting_override_tag(
 ) -> None:
     _seed_tags(db_session, test_user_id, ("tag:trip", "Trip"))
     _seed_posting(db_session, test_user_id, transaction_id="t1", posting_id="p1")
-    save_overrides({"p1": ManualOverride(tag_ids=["tag:trip"])}, db_session, user_id=test_user_id)
+    save_overrides_for_postings(["p1"], {"p1": ManualOverride(tag_ids=["tag:trip"])}, db_session, user_id=test_user_id)
 
     db_session.query(adb.Tag).filter_by(user_id=test_user_id, natural_key="tag:trip").delete()
     db_session.commit()
@@ -312,7 +315,9 @@ def test_load_overrides_with_none_yet_is_empty(db_session: Session, test_user_id
 def test_save_then_load_overrides_round_trips(db_session: Session, test_user_id: uuid.UUID) -> None:
     seed_new_user_defaults(db_session, test_user_id)  # seeds the default categories an override can point at
     _seed_posting(db_session, test_user_id, transaction_id="t1", posting_id="p1")
-    save_overrides({"p1": ManualOverride(category_id="expense:food-drink")}, db_session, user_id=test_user_id)
+    save_overrides_for_postings(
+        ["p1"], {"p1": ManualOverride(category_id="expense:food-drink")}, db_session, user_id=test_user_id
+    )
     reloaded = load_overrides(db_session, user_id=test_user_id)
     assert reloaded["p1"].category_id == "expense:food-drink"
 
@@ -330,7 +335,7 @@ def test_save_then_load_overrides_round_trips_a_tag_override_and_pending_fields(
         pending_selected=False,
         pending_previous_category_id="expense:travel",
     )
-    save_overrides({"p1": override}, db_session, user_id=test_user_id)
+    save_overrides_for_postings(["p1"], {"p1": override}, db_session, user_id=test_user_id)
     reloaded = load_overrides(db_session, user_id=test_user_id)["p1"]
     assert set(reloaded.tag_ids) == {"a", "b"}
     assert reloaded.pending_source == "ai"
@@ -343,7 +348,8 @@ def test_save_then_load_overrides_distinguishes_no_tag_override_from_cleared_to_
 ) -> None:
     _seed_posting(db_session, test_user_id, transaction_id="t1", posting_id="p1")
     _seed_posting(db_session, test_user_id, transaction_id="t2", posting_id="p2")
-    save_overrides(
+    save_overrides_for_postings(
+        ["p1", "p2"],
         {
             "p1": ManualOverride(category_id=None, tag_ids=None),  # no tag override at all
             "p2": ManualOverride(category_id=None, tag_ids=[]),  # explicitly overridden to no tags
@@ -359,13 +365,14 @@ def test_save_then_load_overrides_distinguishes_no_tag_override_from_cleared_to_
 def test_save_overrides_for_postings_does_not_clobber_a_concurrently_saved_different_posting(
     db_session: Session, test_user_id: uuid.UUID
 ) -> None:
-    """Reproduces the actual bug `save_overrides_for_postings` exists to fix: two requests racing on
+    """The bug `save_overrides_for_postings` exists to fix: two requests racing on *different* postings.
 
-    *different* postings must not have one silently erase the other. `save_overrides` (the old whole-table
-    path) always rewrote every posting's override from whatever in-memory dict it was handed — a second
-    caller working off a snapshot taken before the first caller's write would resave that stale snapshot
-    and wipe the first caller's change out. `save_overrides_for_postings` takes an explicit `posting_ids`
-    scope instead, so it only ever touches the postings a given call is actually about.
+    The whole-table writer it replaced rewrote every posting's override from
+    whatever in-memory dict it was handed, so a second caller working off a
+    snapshot taken before the first caller's write would resave that stale
+    snapshot and wipe the first caller's change out.
+    `save_overrides_for_postings` takes an explicit `posting_ids` scope
+    instead, so it only ever touches the postings a given call is about.
     """
     seed_new_user_defaults(db_session, test_user_id)
     _seed_posting(db_session, test_user_id, transaction_id="t1", posting_id="p1")
@@ -386,7 +393,7 @@ def test_save_overrides_for_postings_does_not_clobber_a_concurrently_saved_diffe
     save_overrides_for_postings(["p2"], {"p2": ManualOverride(category_id="expense:travel")}, db_session, test_user_id)
 
     final = load_overrides(db_session, user_id=test_user_id)
-    assert final["p1"].category_id == "expense:food-drink"  # would be silently wiped by the old save_overrides
+    assert final["p1"].category_id == "expense:food-drink"  # the whole-table writer would have wiped this
     assert final["p2"].category_id == "expense:travel"
 
 
@@ -456,10 +463,10 @@ def test_every_repository_round_trips_its_own_entity_type(db_session: Session, t
             ),
         ],
     )
-    replace_opening_balances(
+    upsert_opening_balance(
+        OpeningBalance(account_id="checking:test", amount=100, as_of_date=datetime(2026, 1, 1)),
         db_session,
         test_user_id,
-        [OpeningBalance(account_id="checking:test", amount=100, as_of_date=datetime(2026, 1, 1))],
     )
     insert_manual_transfers(
         [
@@ -495,7 +502,7 @@ def test_every_repository_round_trips_its_own_entity_type(db_session: Session, t
     )
 
     # The interpretation aggregate.
-    replace_transfer_rules(
+    upsert_transfer_rules(
         db_session, test_user_id, [TransferRule(rule_id="r1", description_contains="uber", priority=1)]
     )
     replace_category_patterns(
@@ -516,10 +523,10 @@ def test_every_repository_round_trips_its_own_entity_type(db_session: Session, t
             )
         ],
     )
-    replace_posting_merges(
+    upsert_posting_merge(
+        PostingMerge(merge_id="m1", kept_transaction_id="t1", duplicate_transaction_ids=["t2"]),
         db_session,
         test_user_id,
-        [PostingMerge(merge_id="m1", kept_transaction_id="t1", duplicate_transaction_ids=["t2"])],
     )
 
     # The planning aggregate.
@@ -615,7 +622,7 @@ def test_transfer_rule_round_trips_a_real_account_reference(db_session: Session,
         prune=False,
     )
     db_session.commit()
-    replace_transfer_rules(
+    upsert_transfer_rules(
         db_session,
         test_user_id,
         [
@@ -638,15 +645,13 @@ def test_transfer_rule_referencing_a_nonexistent_account_raises(db_session: Sess
     seed_new_user_defaults(db_session, test_user_id)
     rule = TransferRule(rule_id="r1", description_contains="payroll", counterparty_account_id="does-not-exist")
     with pytest.raises(UnknownNaturalKeyError):
-        replace_transfer_rules(db_session, test_user_id, [rule])
+        upsert_transfer_rules(db_session, test_user_id, [rule])
 
 
 def test_transfer_rule_round_trips_an_excluded_transaction(db_session: Session, test_user_id: uuid.UUID) -> None:
     _seed_posting(db_session, test_user_id, transaction_id="t1", posting_id="p1")
     rule = TransferRule(rule_id="r1", description_contains="payroll", excluded_transaction_ids=["t1"])
-    replace_transfer_rules(db_session, test_user_id, [rule])
-    replace_rule_exclusions(db_session, test_user_id, [rule])
-    db_session.commit()
+    upsert_transfer_rule(rule, db_session, test_user_id)
     assert load_transfer_rules(db_session, test_user_id)[0].excluded_transaction_ids == ["t1"]
 
 
@@ -655,9 +660,8 @@ def test_transfer_rule_excluded_transaction_referencing_a_nonexistent_transactio
 ) -> None:
     seed_new_user_defaults(db_session, test_user_id)
     rule = TransferRule(rule_id="r1", description_contains="payroll", excluded_transaction_ids=["does-not-exist"])
-    replace_transfer_rules(db_session, test_user_id, [rule])
     with pytest.raises(UnknownNaturalKeyError):
-        replace_rule_exclusions(db_session, test_user_id, [rule])
+        upsert_transfer_rule(rule, db_session, test_user_id)
 
 
 def test_upsert_transfer_rule_leaves_every_other_rule_alone(db_session: Session, test_user_id: uuid.UUID) -> None:
@@ -776,7 +780,7 @@ def test_upsert_posting_merge_leaves_every_other_merge_alone(db_session: Session
 def test_transfer_link_round_trips(db_session: Session, test_user_id: uuid.UUID) -> None:
     _seed_posting(db_session, test_user_id, transaction_id="t1", posting_id="p1")
     _seed_posting(db_session, test_user_id, transaction_id="t2", posting_id="p2")
-    replace_transfer_rules(
+    upsert_transfer_rules(
         db_session, test_user_id, [TransferRule(rule_id="chase-card-payoff", description_contains="payoff")]
     )
     link = TransferLink(
@@ -846,7 +850,7 @@ def test_deleting_a_rule_clears_its_links_reference_rather_than_stranding_it(
     """`ON DELETE SET NULL`: the link survives its rule, the dangling reference does not."""
     _seed_posting(db_session, test_user_id, transaction_id="t1", posting_id="p1")
     _seed_posting(db_session, test_user_id, transaction_id="t2", posting_id="p2")
-    replace_transfer_rules(db_session, test_user_id, [TransferRule(rule_id="r1", description_contains="payoff")])
+    upsert_transfer_rules(db_session, test_user_id, [TransferRule(rule_id="r1", description_contains="payoff")])
     insert_transfer_links(
         db_session,
         test_user_id,
@@ -907,8 +911,7 @@ def test_writing_accounts_and_taxonomy_never_touches_any_interpretation_row(
     assert load_transfer_rules(db_session, test_user_id) == []
 
     rule = TransferRule(rule_id="r1", description_contains="uber", excluded_transaction_ids=["t1"])
-    replace_transfer_rules(db_session, test_user_id, [rule])
-    replace_rule_exclusions(db_session, test_user_id, [rule])
+    upsert_transfer_rule(rule, db_session, test_user_id)
     replace_category_patterns(
         db_session,
         test_user_id,
@@ -919,10 +922,10 @@ def test_writing_accounts_and_taxonomy_never_touches_any_interpretation_row(
         test_user_id,
         [PostingSplit(posting_id="p1", legs=[PostingSplitLeg(amount=6), PostingSplitLeg(amount=4)])],
     )
-    replace_posting_merges(
+    upsert_posting_merge(
+        PostingMerge(merge_id="m1", kept_transaction_id="t1", duplicate_transaction_ids=["t2"]),
         db_session,
         test_user_id,
-        [PostingMerge(merge_id="m1", kept_transaction_id="t1", duplicate_transaction_ids=["t2"])],
     )
     insert_transfer_links(
         db_session,
@@ -1131,31 +1134,18 @@ def test_undismiss_suggestion_reports_false_when_nothing_to_remove(
 # of both shapes. Everything below is a guard on one of those two.
 
 
-def test_replacing_the_transfer_rules_leaves_the_category_patterns_alone(
-    db_session: Session, test_user_id: uuid.UUID
-) -> None:
-    """Both effects share `categorization_rules`, so the transfer prune must be scoped to its own."""
-    seed_new_user_defaults(db_session, test_user_id)  # seeds the default categories the pattern FKs into
-    replace_category_patterns(
-        db_session,
-        test_user_id,
-        [CategoryPattern(pattern_id="pattern:keep", description_contains="uber", category_id="expense:transport")],
-    )
-    replace_transfer_rules(db_session, test_user_id, [TransferRule(rule_id="rule:a", description_contains="a")])
-    db_session.commit()
-
-    replace_transfer_rules(db_session, test_user_id, [TransferRule(rule_id="rule:b", description_contains="b")])
-    db_session.commit()
-
-    assert [rule.rule_id for rule in load_transfer_rules(db_session, test_user_id)] == ["rule:b"]
-    assert set(load_category_patterns(db_session, test_user_id)) == {"pattern:keep"}
-
-
 def test_replacing_the_category_patterns_leaves_the_transfer_rules_alone(
     db_session: Session, test_user_id: uuid.UUID
 ) -> None:
+    """Both effects share `categorization_rules`, so the one surviving prune must be scoped to its own.
+
+    Its transfer-rule twin went with the branch it tested: `upsert_transfer_rules`
+    no longer prunes at all (item G9), so there is no transfer prune left to
+    scope. This direction is the one production takes — `POST /categories/{id}/rename`
+    rewrites the category patterns whole.
+    """
     seed_new_user_defaults(db_session, test_user_id)
-    replace_transfer_rules(db_session, test_user_id, [TransferRule(rule_id="rule:keep", description_contains="a")])
+    upsert_transfer_rules(db_session, test_user_id, [TransferRule(rule_id="rule:keep", description_contains="a")])
     replace_category_patterns(
         db_session,
         test_user_id,
@@ -1238,8 +1228,17 @@ def test_a_rule_claiming_the_wrong_stage_is_rejected(db_session: Session, test_u
         db_session.flush()
 
 
-def test_saving_every_override_leaves_the_dismissed_archive_alone(db_session: Session, test_user_id: uuid.UUID) -> None:
-    """Both lifecycles share `suggestions`, so the pending rewrite must be scoped to `status="pending"`."""
+def test_clearing_a_postings_override_leaves_the_dismissed_archive_alone(
+    db_session: Session, test_user_id: uuid.UUID
+) -> None:
+    """Both lifecycles share `suggestions`, so the pending delete must be scoped to `status="pending"`.
+
+    The posting is named on the clearing call rather than left implicit.
+    `save_overrides_for_postings` returns immediately on an empty
+    `posting_ids` — so the direct translation of the whole-table
+    `save_overrides({})` this replaced would delete nothing at all and
+    assert on an archive nothing had been given the chance to touch.
+    """
     _seed_posting(db_session, test_user_id, transaction_id="t1", posting_id="p1")
     db_session.commit()
     dismiss_suggestion(
@@ -1250,11 +1249,13 @@ def test_saving_every_override_leaves_the_dismissed_archive_alone(db_session: Se
         ),
     )
 
-    save_overrides(
-        {"p1": ManualOverride(pending_source="ai", category_id="expense:transport")}, db_session, test_user_id
+    save_overrides_for_postings(
+        ["p1"], {"p1": ManualOverride(pending_source="ai", category_id="expense:transport")}, db_session, test_user_id
     )
-    save_overrides({}, db_session, test_user_id)
+    assert load_overrides(db_session, test_user_id)["p1"].pending_source == "ai", "the pending row was never written"
+    save_overrides_for_postings(["p1"], {}, db_session, test_user_id)
 
+    assert load_overrides(db_session, test_user_id) == {}, "the pending row was not cleared"
     assert [entry.suggestion_id for entry in list_dismissed_suggestions(db_session, test_user_id)] == ["transfer:a"]
 
 
@@ -1277,7 +1278,7 @@ def test_one_posting_can_only_be_pending_once(db_session: Session, test_user_id:
     """The old `UNIQUE(user_id, posting_id)` survives as a posting-derived `natural_key`."""
     _seed_posting(db_session, test_user_id, transaction_id="t1", posting_id="p1")
     db_session.commit()
-    save_overrides({"p1": ManualOverride(pending_source="ai")}, db_session, test_user_id)
+    save_overrides_for_postings(["p1"], {"p1": ManualOverride(pending_source="ai")}, db_session, test_user_id)
 
     db_session.add(
         adb.Suggestion(
