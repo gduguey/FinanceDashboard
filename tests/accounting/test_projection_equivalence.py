@@ -523,6 +523,75 @@ def test_a_category_delete_uncategorizes_the_postings_filed_under_it(seeded_ledg
     assert_projection_equals_the_pipeline(db_session)
 
 
+def _dirty_transaction_ids(session: Session) -> set[str]:
+    """Every transaction the staleness triggers have enqueued, by natural key.
+
+    Returns
+    -------
+    set[str]
+    """
+    dirty = session.query(adb.ResolvedPostingDirty.transaction_id).filter_by(user_id=DEFAULT_USER_ID)
+    rows = session.query(adb.Transaction.natural_key).filter(
+        adb.Transaction.user_id == DEFAULT_USER_ID, adb.Transaction.id.in_(dirty.scalar_subquery())
+    )
+    return {natural_key for (natural_key,) in rows}
+
+
+def test_a_category_write_dirties_only_what_it_can_change(seeded_ledger, client, db_session) -> None:
+    """The narrowed `categories` trigger, asserted on the queue rather than on a stopwatch (item C9).
+
+    Every case above proves the projection ends up *right*. None of them can
+    prove it was not rebuilt wholesale to get there — which is what every
+    category write used to cost, `_WHOLE_LEDGER` being the mapping and 2.0 s
+    over a 10k-transaction ledger being the price.
+
+    So this reads `resolved_postings_dirty` directly, and tracks one
+    transaction: the one whose posting the statement filed under
+    `expense:shopping`. It is the entire set a `categories` write can reach,
+    so a write that enqueues it when it did not change it is over-invalidating
+    and a write that fails to enqueue it when it did is silently wrong.
+
+    Two things this deliberately does not assert. It does not assert an empty
+    queue after a rename: `api.routers.categories._write_category_references`
+    rewrites `posting_splits` whole on every rename, merging or not, so the
+    split's transaction is enqueued by *that* table's trigger doing its job.
+    And it does not assert the merge enqueues nothing else, for the same
+    reason. What it pins is which writes reach the categorized transaction.
+    """
+    drain(db_session, DEFAULT_USER_ID)
+    categorized = seeded_ledger["stationery_transaction_id"]
+    every_transaction = {
+        row.natural_key for row in db_session.query(adb.Transaction).filter_by(user_id=DEFAULT_USER_ID)
+    }
+    assert _dirty_transaction_ids(db_session) == set()
+
+    created = client.post(
+        f"{ACCOUNTING}/categories", json={"name": "Stationery", "classification": "expense", "color": "#445566"}
+    )
+    assert created.status_code == 201, created.text
+    assert _dirty_transaction_ids(db_session) == set(), (
+        "creating a category invalidated something, and no posting can be filed under a row that did not exist"
+    )
+
+    drain(db_session, DEFAULT_USER_ID)
+    renamed = client.post(f"{ACCOUNTING}/categories/expense:stationery/rename", json={"name": "Desk Supplies"})
+    assert renamed.status_code == 200, renamed.text
+    dirtied_by_the_rename = _dirty_transaction_ids(db_session)
+    assert categorized not in dirtied_by_the_rename, (
+        "a rename that merges nothing invalidated a categorized transaction; only `name` changed, "
+        "and `name` does not reach the resolved frame"
+    )
+    assert dirtied_by_the_rename != every_transaction, "a rename still invalidates the whole ledger"
+
+    drain(db_session, DEFAULT_USER_ID)
+    _rename_a_category_into_another(client, seeded_ledger, db_session)
+    assert categorized in _dirty_transaction_ids(db_session), (
+        "a category merge did not enqueue the transaction filed under the retired key — the narrowing is wrong, "
+        "and the projection would keep serving the old category"
+    )
+    assert_projection_equals_the_pipeline(db_session)
+
+
 CHASE_CHECKING_CSV = (
     "Details,Posting Date,Description,Amount,Type,Balance,Check or Slip #\n"
     "DEBIT,03/02/2026,CORNER SHOP GROCERIES,-21.50,DEBIT_CARD,100.00,,\n"

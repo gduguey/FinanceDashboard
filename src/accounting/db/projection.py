@@ -57,8 +57,9 @@ their transaction directly from the transition table with no join at all.
 
 Every overlay row hangs off a posting or a transaction, and both carry their
 own triggers, so the only join that can fail is one the parent's trigger has
-already covered. `tests/accounting/test_projection_triggers.py` holds that
-case.
+already covered.
+`tests/accounting/test_projection_equivalence.py::test_a_cascade_that_removes_a_transaction_removes_its_projection_rows`
+holds that case.
 
 ## What generalises
 
@@ -235,17 +236,67 @@ _WHOLE_LEDGER = f"""
 """  # noqa: S608 — `SCHEMA` is this package's own constant, never caller input
 """Every transaction the changed rows' owners have — what a change with no bounded blast radius enqueues.
 
-Used by the three tables whose rows can change the resolution of any
+Used by the two tables whose rows can change the resolution of any
 transaction at all: `categorization_rules` (a rule's `description_contains`
-can match anything), `accounts` (a `kind` change moves
+can match anything) and `accounts` (a `kind` change moves
 `ledger.categorization._safe_rule_matches`' safe set, and a newly created
-account can make a rule that named it start matching) and `categories` (a
-retirement rewrites every posting imported under the retired key).
+account can make a rule that named it start matching).
 
-Narrowing `categories` to the postings under the retired key is exactly
-derivable from `ledger.categorization.apply_category_redirects`, which only
-rewrites rows whose `category_id` is a key of the redirect map. It is
-deliberately not done here — see item C9.
+`categories` used to be the third and is not any more — see
+`_CATEGORIES_AFFECTED` for the narrow mapping that replaced it and why that
+set is derivable rather than guessed. `accounts` cannot be narrowed the same
+way: its *insert* can change resolution, and an insert has nothing to join to.
+"""
+
+_CATEGORIES_AFFECTED = f"""
+    SELECT p.user_id, p.transaction_id
+    FROM changed AS c
+    JOIN {SCHEMA}.postings AS p
+      ON p.user_id = c.user_id AND (p.category_id = c.id OR p.subcategory_id = c.id)
+"""  # noqa: S608 — `SCHEMA` is this package's own constant, never caller input
+"""The transactions a `categories` write can change: those with a posting *filed under* the changed row.
+
+This was `_WHOLE_LEDGER` until item C9, so every category write — a merge, a
+delete, a rename, even creating one — cost a full projection rebuild,
+measured at 2.0 s over a 10k-transaction ledger.
+
+Why this is the complete set rather than a hopeful narrowing. Resolution
+reads `categories` at four points, and they divide into two kinds:
+
+1. **`ledger.categorization.apply_category_redirects`** rewrites a posting's
+   `category_id`/`subcategory_id` when — and only when — the value is a key
+   of the redirect map, which `repositories.taxonomy.load_category_redirects`
+   builds from the retired rows. So a row entering, leaving or changing
+   retirement reaches exactly the postings filed under it. That covers a
+   merge (`retired_at` and `superseded_by_category_id` set, plus every
+   tombstone the same chain-collapsing pass repoints, all of which land in
+   `changed`), a delete (retired with no successor), and the resurrection
+   `repositories.taxonomy._category_row` performs by writing `retired_at`
+   back to `NULL`.
+2. **`importers.ingest.load_ledger`, `load_posting_splits` and
+   `load_overrides`** read `categories` only to translate a stored `id` into
+   the `natural_key` the frame carries. A `categories` write cannot change
+   that translation. The natural key is immutable: `db.base.merge_by_natural_key`
+   conflicts on `(user_id, natural_key)` rather than updating it, a rename
+   that merges nothing changes only `name` (`taxonomy.plan_category_rename`
+   returns an empty remap), and a rename that merges *retires* the source and
+   writes the target rather than moving a key. And a still-referenced row
+   cannot be deleted: `posting_overrides.category_id` and
+   `posting_split_legs.category_id` are `NO ACTION` foreign keys, so
+   `replace_categories`' prune fails loudly rather than orphaning anything —
+   which is why the merge and delete routes repoint those two tables first,
+   through `save_overrides_for_postings` and `replace_posting_splits`, each
+   firing its own trigger.
+
+What follows: an `INSERT` dirties nothing, because no posting can already be
+filed under a row that did not exist; a rename that changes only `name` or
+`color` dirties nothing, because neither reaches the frame; and a merge or a
+delete dirties the transactions it actually changes.
+
+Held by `tests/accounting/test_projection_equivalence.py` — its two redirect
+cases for the resolved values, and
+`test_a_category_write_dirties_only_what_it_can_change` for the queue itself,
+which is the one that fails if this is ever widened back.
 """
 
 _VIA_POSTING = f"""
@@ -325,7 +376,7 @@ AFFECTED_TRANSACTIONS: dict[str, str] = {
         JOIN {SCHEMA}.postings AS p ON p.id = o.posting_id AND p.user_id = o.user_id
     """,  # noqa: S608 — `SCHEMA` is this package's own constant, never caller input
     "accounts": _WHOLE_LEDGER,
-    "categories": _WHOLE_LEDGER,
+    "categories": _CATEGORIES_AFFECTED,
     "categorization_rules": _WHOLE_LEDGER,
 }
 """Per source table, the `SELECT` that maps its changed rows to the transactions they dirty.
@@ -412,6 +463,32 @@ def _trigger_statements(table: str, affected: str) -> tuple[str, ...]:
         for suffix, sql_event, transition in _TRIGGER_EVENTS
     ]
     return tuple(statements)
+
+
+def trigger_function_statement(table: str, affected: str) -> str:
+    """Build the `CREATE OR REPLACE FUNCTION` for one table's mapping, without its four `CREATE TRIGGER`s.
+
+    For a migration that changes what an *existing* trigger enqueues.
+    Replaying the whole of `PROJECTION_TRIGGER_STATEMENTS` cannot do that:
+    the function is `CREATE OR REPLACE` and so is idempotent, but the
+    triggers are plain `CREATE TRIGGER` and would fail on their second run.
+    A trigger names its function and nothing about its body, so replacing the
+    function alone is the whole of such a change.
+
+    Parameters
+    ----------
+    table
+        The source table's bare name, as in `AFFECTED_TRANSACTIONS`.
+    affected
+        The `SELECT` to install. Passed rather than looked up, so a
+        migration's `downgrade` can install the fragment that revision
+        replaced without that fragment having to survive in this module.
+
+    Returns
+    -------
+    str
+    """
+    return _trigger_statements(table, affected)[0]
 
 
 PROJECTION_TRIGGER_STATEMENTS: tuple[str, ...] = tuple(

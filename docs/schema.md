@@ -40,11 +40,13 @@ enforced by the database rather than by application `WHERE` clauses.
 bookkeeping and lives in `public`). Postgres 16, both locally and in
 `deploy/docker-compose.yml`.
 
-Schema history is the baseline plus two revisions:
+Schema history is the baseline plus three revisions:
 `src/migration/versions/000000000001_baseline_schema.py` (`down_revision = None`),
 then `000000000002_resolved_posting_projection.py`, which adds §3.10's two
-tables and their triggers, and `000000000003_sync_runs.py`, which adds
-`trades.sync_runs`.
+tables and their triggers; `000000000003_sync_runs.py`, which adds
+`trades.sync_runs`; and
+`000000000004_narrow_the_categories_staleness_trigger.py`, which changes one
+trigger function's body and no table at all.
 The previous 28-revision chain — which contained a drop-and-recreate of both
 schemas partway through and hand-copied RLS into six separate revisions — was
 collapsed, not carried forward. The project is pre-launch with no data to

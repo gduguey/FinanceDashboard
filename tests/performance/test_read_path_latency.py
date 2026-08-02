@@ -136,6 +136,7 @@ import time
 from typing import TYPE_CHECKING
 
 import pytest
+from sqlalchemy import text
 
 from accounting.api.api_models import NO_SUBCATEGORY, UNCATEGORIZED
 from http_api.pagination import PAGE_LIMIT_MAX
@@ -146,9 +147,11 @@ from tests.performance.conftest import (
 )
 
 if TYPE_CHECKING:
+    import uuid
     from collections.abc import Callable
 
     from fastapi.testclient import TestClient
+    from sqlalchemy import Engine
 
 pytestmark = pytest.mark.perf
 
@@ -874,4 +877,141 @@ def test_a_narrow_write_costs_a_recompute_of_what_it_touched(request_as: Callabl
     assert factor < MAX_SCALING_FACTOR, (
         f"the page after a single override cost {factor:.1f}x more for {VOLUME_RATIO:.0f}x the ledger "
         f"({small * 1000:.0f} ms, then {big * 1000:.0f} ms). A narrow write should not invalidate the ledger."
+    )
+
+
+MAX_CATEGORY_MERGE_SECONDS = 12.0
+"""Wall-clock ceiling for the page after a category merge, over a 10k-transaction ledger.
+
+Item C9's number. A `categories` write used to enqueue every one of the
+user's transactions, so merging two categories cost a full projection
+rebuild — for a change that can only ever affect the postings *filed under*
+the retired key. `accounting.db.projection._CATEGORIES_AFFECTED` is that set.
+
+Measured here, on one seed, changing nothing but the trigger's mapping:
+**3,681 ms before and 1,743 ms after**, with 1,879 of the 10,000
+transactions filed under the merged-away category (1,879 enqueued rather
+than 10,000). Both figures are larger than the 2.0 s PR E quoted for the
+same operation, and that is the seed rather than a regression: PR E measured
+a tenant with no categories at all, where `apply_category_redirects` returns
+early and `load_ledger`'s two taxonomy joins find nothing. A ledger that
+actually uses categories is dearer to resolve per transaction, which is
+exactly the ledger this saving matters on.
+
+Deliberately a wall clock and not a ratio: the work is proportional to the
+*matched* set rather than to the ledger, so the small tenant says nothing
+useful about the big one. And deliberately loose. What proves the narrowing
+holds is
+`tests/accounting/test_projection_equivalence.py::test_a_category_write_dirties_only_what_it_can_change`,
+which asserts the dirty queue's contents in the default suite — deterministic,
+and with no runner speed in the answer. This is the backstop that catches a
+recompute which stops being proportional at all.
+"""
+
+_CATEGORIZED_SHARE = 10
+"""One posting in this many is filed under the merged-away category — a tenth of the ledger.
+
+Not all of it, and not one row. All of it would make the narrowing
+indistinguishable from the whole-ledger mapping it replaced; one row would
+measure an empty recompute and pass however wide the trigger got.
+"""
+
+_MERGED_AWAY_CATEGORY = "expense:perf-source"
+_MERGE_TARGET_CATEGORY = "expense:perf-target"
+
+
+def _file_postings_under_a_category(engine: Engine, tenant: uuid.UUID, natural_key: str) -> int:
+    """Stamp every `_CATEGORIZED_SHARE`-th posting with a raw `category_id`, and report how many transactions that is.
+
+    Raw `postings.category_id` rather than an override, because that is the
+    only column `ledger.categorization.apply_category_redirects` reads — an
+    override naming the same category is repointed by its own route and its
+    own trigger, and would measure nothing about this one.
+
+    Written in SQL rather than through the importer for the same reason the
+    rest of this seed is (see `conftest`): the rows are the subject, not the
+    code that writes them.
+
+    Returns
+    -------
+    int
+        How many of the tenant's transactions now have a posting filed under
+        `natural_key`.
+    """
+    with engine.begin() as connection:
+        connection.execute(text("SELECT set_config('app.current_user_id', :value, false)"), {"value": str(tenant)})
+        connection.execute(
+            text("""
+                INSERT INTO accounting.categories (user_id, natural_key, name, classification, color)
+                VALUES (:tenant, :source, 'Perf Source', 'expense', '#112233'),
+                       (:tenant, :target, 'Perf Target', 'expense', '#445566')
+                ON CONFLICT DO NOTHING
+            """),
+            {"tenant": tenant, "source": _MERGED_AWAY_CATEGORY, "target": _MERGE_TARGET_CATEGORY},
+        )
+        connection.execute(
+            text("""
+                UPDATE accounting.postings AS p
+                SET category_id = c.id
+                FROM accounting.categories AS c
+                WHERE c.user_id = :tenant AND c.natural_key = :source
+                  AND p.user_id = :tenant
+                  AND ('x' || substr(md5(p.natural_key), 1, 8))::bit(32)::bigint % :share = 0
+            """),
+            {"tenant": tenant, "source": _MERGED_AWAY_CATEGORY, "share": _CATEGORIZED_SHARE},
+        )
+        return connection.execute(
+            text("""
+                SELECT count(DISTINCT p.transaction_id)
+                FROM accounting.postings AS p
+                JOIN accounting.categories AS c ON c.id = p.category_id
+                WHERE p.user_id = :tenant AND c.natural_key = :source
+            """),
+            {"tenant": tenant, "source": _MERGED_AWAY_CATEGORY},
+        ).scalar_one()
+
+
+def test_a_category_merge_recomputes_only_the_postings_filed_under_it(
+    request_as: Callable[[str], TestClient], app_runtime_engine: Engine, tenants: dict[str, uuid.UUID]
+) -> None:
+    """Item C9, at the volume it was costed at: a merge, then the next page.
+
+    Last in this module because it is the one case that changes the seed —
+    it files a tenth of the big tenant's postings under a category. That
+    ordering is not what makes it correct, though: the assertion below checks
+    its own precondition, so a reorder that ran it against an unstamped ledger
+    fails loudly instead of timing an empty recompute and passing. Same
+    reasoning as `conftest._analyze_as_owner` — a setup step that reports
+    success whether or not it did anything is how B5 survived for months.
+    """
+    client = request_as("big")
+    categorized = _file_postings_under_a_category(app_runtime_engine, tenants["big"], _MERGED_AWAY_CATEGORY)
+    print(f"  {categorized} of {BIG_TENANT_TRANSACTIONS} transactions filed under {_MERGED_AWAY_CATEGORY}")  # noqa: T201
+    assert categorized > BIG_TENANT_TRANSACTIONS // (2 * _CATEGORIZED_SHARE), (
+        f"only {categorized} transactions carry the merged-away category, so this would time a recompute of "
+        f"almost nothing and pass however wide the staleness trigger became"
+    )
+    assert categorized < BIG_TENANT_TRANSACTIONS // 2, (
+        f"{categorized} of {BIG_TENANT_TRANSACTIONS} transactions carry it, which is enough of the ledger that a "
+        f"whole-ledger invalidation would be indistinguishable from the narrow one"
+    )
+    # The stamp itself dirtied those transactions, through `postings`' own
+    # trigger. Drained here so the measurement below is the merge's cost and
+    # not this fixture's.
+    assert client.get(_POSTINGS, params={"limit": 1}).status_code == 200
+
+    merged = client.post(f"/api/v1/accounting/categories/{_MERGED_AWAY_CATEGORY}/rename", json={"name": "Perf Target"})
+    assert merged.status_code == 200, merged.text
+    assert merged.json()["merged"] is True, (
+        "the rename did not merge, so no category was retired and nothing recomputed"
+    )
+
+    started = time.perf_counter()
+    assert client.get(_POSTINGS, params={"limit": _PAGE_SIZE}).status_code == 200
+    elapsed = time.perf_counter() - started
+    print(f"  category merge + page -> {elapsed * 1000:.0f} ms")  # noqa: T201
+
+    assert elapsed < MAX_CATEGORY_MERGE_SECONDS, (
+        f"the page after a category merge took {elapsed:.2f} s over a {BIG_TENANT_TRANSACTIONS}-transaction "
+        f"ledger with {categorized} affected transactions, budget {MAX_CATEGORY_MERGE_SECONDS} s"
     )
