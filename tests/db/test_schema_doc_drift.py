@@ -143,11 +143,19 @@ def test_section_2_places_every_table_in_an_aggregate() -> None:
     when the gate was written: `trades.sync_runs`, `accounting.resolved_postings`
     and `accounting.resolved_postings_dirty` were all documented in §3 and
     belonged to no aggregate.
+
+    Exactly one aggregate per table, not at least one. §2's own rule is that
+    "each aggregate loads and writes its own tables independently"; a table
+    named in two rows contradicts that, and a set comparison alone would let
+    it through.
     """
     rows = [line for line in _section(2).splitlines() if line.startswith("| **")]
     assert rows, "§2's aggregate table is not where this expects it"
-    placed = {table for row in rows for table in _QUALIFIED_TABLE.findall(row)}
+    placements = [table for row in rows for table in _QUALIFIED_TABLE.findall(row)]
+    twice = sorted({table for table in placements if placements.count(table) > 1})
+    assert twice == [], f"§2 places these tables in more than one aggregate, so neither owns them: {twice}"
 
+    placed = set(placements)
     models = _model_tables()
     assert placed - models == set(), f"§2 places tables the models do not declare: {sorted(placed - models)}"
     assert models - placed == set(), f"the models declare tables §2 places in no aggregate: {sorted(models - placed)}"
