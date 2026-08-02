@@ -33,6 +33,8 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
+from sqlalchemy.orm import Session
+
 import accounting.db as adb
 from accounting.importers.ingest import load_ledger
 from accounting.repositories.projection import drain, fresh_display_rows, rebuild
@@ -42,8 +44,6 @@ from tests.conftest import DEFAULT_USER_ID
 
 if TYPE_CHECKING:
     import uuid
-
-    from sqlalchemy.orm import Session
 
 
 _COMPARED_FIELDS = (
@@ -397,7 +397,7 @@ def _add_a_subcategory(client, _seeded, _session):
 
 
 def _rename_a_tag(client, seeded, _session):
-    """Two commits in one request — `remap_tag_ids` commits, then the handler commits again."""
+    """A merge: the second tag folds into the first, repointing the join rows and pruning the merged-away tag."""
     second = client.post(f"{ACCOUNTING}/tags", json={"name": "Checked"}).json()
     assert client.post(f"{ACCOUNTING}/tags/{second['tag_id']}/rename", json={"name": "Reviewed"}).status_code == 200
 
@@ -694,25 +694,44 @@ def _drain_between_the_two_commits(monkeypatch, module, function_name: str, db_s
     return drained
 
 
-def test_a_tag_rename_self_heals_when_a_read_lands_between_its_two_commits(
-    client, seeded_ledger, db_session, monkeypatch
-) -> None:
-    """`POST /tags/{id}/rename` commits twice, and a drain in the gap must not leave the projection wrong.
+def _count_commits(monkeypatch) -> list[int]:
+    """Count `Session.commit()` calls, so a test can assert a request publishes exactly one state.
 
-    `repositories.taxonomy.remap_tag_ids` commits the repointed
-    `posting_tags`/`posting_override_tags` rows itself, and the handler then
-    commits the pruned `tags` row. A read arriving between the two sees a
-    real, half-applied state — and the projection it fills from that state
-    is, briefly, what the pipeline would also have said at that moment.
+    Counting the call rather than observing the window is the stronger
+    assertion and the only one that stays deterministic: a request that
+    commits once has no interleaving to find, and a test that hunts for
+    one can only ever fail to find it for the wrong reason. It is also
+    what these tests replaced — see their own docstrings.
 
-    The property asserted is that it *self-heals*: the second commit touches
-    trigger-covered tables, so it re-dirties, and the next drain corrects
-    everything. Non-atomicity across the two commits is pre-existing (item
-    D4) and this test does not claim it is fixed — it claims the cache
-    cannot outlive it.
+    Returns
+    -------
+    list[int]
+        A single-element list holding the running count, so a caller can
+        reset it to zero before the request it is measuring.
     """
-    from accounting.api.routers import tags as tags_router  # noqa: PLC0415 — patched per test, not imported globally
+    counter = [0]
+    real = Session.commit
 
+    def _counting(self) -> None:
+        counter[0] += 1
+        real(self)
+
+    monkeypatch.setattr(Session, "commit", _counting)
+    return counter
+
+
+def test_a_tag_rename_publishes_one_state_and_not_two(client, seeded_ledger, db_session, monkeypatch) -> None:
+    """`POST /tags/{id}/rename` used to commit twice, and a read could land between the two (item D4).
+
+    `repositories.taxonomy.remap_tag_ids` committed the repointed
+    `posting_tags`/`posting_override_tags` rows itself, and the handler
+    committed again once `replace_tags` had pruned the merged-away row —
+    so a concurrent read could see the postings already moved to the
+    surviving tag while the merged-away tag still existed. PR E proved
+    the projection self-healed from that state; this asserts the state no
+    longer exists to be seen. The helper flushes now and the handler owns
+    the only commit.
+    """
     assert_projection_equals_the_pipeline(db_session)
     second = client.post(f"{ACCOUNTING}/tags", json={"name": "Checked"}).json()
     client.put(
@@ -721,12 +740,13 @@ def test_a_tag_rename_self_heals_when_a_read_lands_between_its_two_commits(
     )
     assert_projection_equals_the_pipeline(db_session)
 
-    drained = _drain_between_the_two_commits(monkeypatch, tags_router, "remap_tag_ids", db_session)
+    commits = _count_commits(monkeypatch)
+    commits[0] = 0
     renamed = client.post(f"{ACCOUNTING}/tags/{second['tag_id']}/rename", json={"name": "Reviewed"})
-    assert renamed.status_code == 200, renamed.text
-    assert drained, "the interleaved read never ran"
-    assert drained[0] > 0, "the interleaved read did not land inside the window this test exists for"
 
+    assert renamed.status_code == 200, renamed.text
+    assert renamed.json()["merged"] is True, "the rename did not merge, so it never reached the two-commit path"
+    assert commits[0] == 1, f"the rename published {commits[0]} states; a merge must be one transaction"
     assert_projection_equals_the_pipeline(db_session)
 
 
