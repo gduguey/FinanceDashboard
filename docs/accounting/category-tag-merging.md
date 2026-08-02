@@ -136,17 +136,26 @@ subcategory only ever merges into a sibling under the same
 (`accounting.api.routers.categories.delete_category`). Deleting "Dining" outright, not merging it into
 anything.
 
-1. **`taxonomy.category_ids_to_delete`** — a subcategory's delete
-   never cascades (it has none of its own); a top-level category's delete
-   takes every one of its subcategories down with it. Returns the full set
-   of ids being removed, e.g. `{"expense:dining"}`, or
-   `{"expense:dining", "expense:dining:fast-food"}` if "Dining" had a
-   subcategory.
+1. **`_categories_leaving_the_tree`** — `taxonomy.category_ids_to_delete`
+   answers what the *request* names: a subcategory's delete never
+   cascades (it has none of its own); a top-level category's delete takes
+   every one of its subcategories down with it, e.g. `{"expense:dining"}`
+   or `{"expense:dining", "expense:dining:fast-food"}`. Then
+   `normalize_categories` removes **one more row nobody asked about** — a
+   parent left with no real subcategory loses its "Other" catch-all,
+   since "Other" alongside nothing is meaningless. The set every step
+   below works from is the difference between the tree before and the
+   tree after, so it includes that catch-all. Item A10: it used to work
+   from the request's set instead, and pruning a still-referenced
+   catch-all was an `IntegrityError` and a 500 (a budget), or a delete of
+   raw import provenance the foreign key refuses (a posting).
 
 2. **`GET /categories/{category_id}/delete-preview`** — counts
    how many raw ledger postings currently carry any id from step 1 as
    their own `category_id` or `subcategory_id`
-   (`_posting_count_for_categories`), without deleting anything.
+   (`_posting_count_for_categories`), without deleting anything. Over the
+   same set the delete acts on, so the dialog's number and the one the
+   delete reports are the same number.
    The frontend shows this count in a confirmation dialog ("N transactions
    will become uncategorized") only when it's greater than zero — deleting
    a category with no postings just happens immediately, no popup.

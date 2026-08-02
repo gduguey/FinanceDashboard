@@ -2687,6 +2687,96 @@ def test_category_delete_404s_for_an_unknown_category(client) -> None:
     assert response.status_code == 404
 
 
+def test_deleting_the_last_subcategory_clears_the_budget_on_the_catch_all_it_takes_with_it(client) -> None:
+    """Item A10: `normalize_categories` removes a row the request never named, and it has references.
+
+    Deleting a category's only real subcategory leaves "Other" alone
+    under its parent, which is meaningless, so the catch-all goes too.
+    Nothing repointed the budget filed under it, and
+    `replace_categories`' prune then hit
+    `fk_budgets_subcategory_id_categories` — an `IntegrityError`, a 500,
+    on a plain subcategory delete.
+    """
+    client.post(
+        "/api/v1/accounting/categories", json={"name": "Custom", "classification": "expense", "color": "#000000"}
+    )
+    client.post(
+        "/api/v1/accounting/categories/expense:custom/subcategories", json={"name": "Gadgets", "color": "#222222"}
+    )
+    budget = client.post(
+        "/api/v1/accounting/budgets",
+        json={
+            "category_id": "expense:custom",
+            "subcategory_id": "expense:custom:other",
+            "amount": "50.00",
+            "currency": "USD",
+            "month": None,
+        },
+    )
+    assert budget.status_code == 201, budget.text
+
+    response = client.delete("/api/v1/accounting/categories/expense:custom:gadgets")
+
+    assert response.status_code == 200, response.text
+    categories = response.json()["categories"]
+    assert "expense:custom:gadgets" not in categories
+    assert "expense:custom:other" not in categories
+    assert "expense:custom" in categories
+    # The budget survives as a category-level one: only its `subcategory_id`
+    # named a deleted id, and that field is nullable.
+    budgets = client.get("/api/v1/accounting/store").json()["budgets"]
+    assert [(b["category_id"], b["subcategory_id"]) for b in budgets] == [("expense:custom", None)]
+
+
+def test_deleting_the_last_subcategory_uncategorizes_postings_filed_under_the_catch_all(client) -> None:
+    """The same A10 set, counted rather than cleared — and the worse half of it.
+
+    A posting filed under the auto-removed "Other" is raw import
+    provenance behind a `NO ACTION` foreign key, so pruning that row
+    could not merely fail the request, it would be a delete the schema
+    refuses. Retiring it with the rest is what makes it safe, and it is
+    what makes the reported count right.
+
+    **This changes a number a user reads**: `uncategorized_posting_count`
+    (and the identical figure `GET /categories/{id}/delete-preview`
+    shows in the confirmation dialog) now includes the postings filed
+    under the catch-all. Those postings genuinely do become
+    uncategorized, so the larger number is the correct one.
+    """
+    account = _create_account(client, name="Generic Checking", kind="checking", institution="Generic Bank")
+    csv_text = (
+        "Date,Description,Amount,Category,Subcategory\n"
+        "2026-06-30,Gadget Store,-42.50,Custom,Gadgets\n"
+        "2026-06-29,Odds And Ends,-10.00,Custom,Other\n"
+    )
+    client.post(
+        "/api/v1/accounting/import/canonical",
+        files={"file": ("generic.csv", csv_text, "text/csv")},
+        data={
+            "institution": "Generic Bank",
+            "account_kind": "checking",
+            "account_id": account["account_id"],
+            "account_name": "Generic Checking",
+        },
+    )
+    store = client.get("/api/v1/accounting/store").json()
+    custom = next(c for c in store["categories"].values() if c["name"] == "Custom")
+    gadgets = f"{custom['category_id']}:gadgets"
+    catch_all = f"{custom['category_id']}:other"
+    assert catch_all in store["categories"]
+
+    preview = client.get(f"/api/v1/accounting/categories/{gadgets}/delete-preview")
+    response = client.delete(f"/api/v1/accounting/categories/{gadgets}")
+
+    assert response.status_code == 200, response.text
+    assert catch_all not in response.json()["categories"]
+    # Both postings, not just the one filed under `gadgets`.
+    assert response.json()["uncategorized_posting_count"] == 2
+    assert preview.json()["posting_count"] == 2, "the dialog's count disagreed with what the delete then reported"
+    resolved = _postings(client, account_ids=account["account_id"])
+    assert {posting["subcategory_id"] for posting in resolved} == {None}
+
+
 def test_post_category_creates_a_new_top_level_category(client) -> None:
     response = client.post(
         "/api/v1/accounting/categories", json={"name": "Custom", "classification": "expense", "color": "#000000"}

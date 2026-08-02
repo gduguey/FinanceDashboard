@@ -259,6 +259,38 @@ def _write_category_references(references: CategoryReferences, session: Session,
     replace_posting_splits(session, user_id, references.posting_splits.values())
 
 
+def _categories_leaving_the_tree(
+    categories: dict[str, DomainCategory], category_id: str
+) -> tuple[set[str], dict[str, DomainCategory]]:
+    """Every id a delete of `category_id` actually removes, and the tree that survives it.
+
+    Not the same set as `taxonomy.category_ids_to_delete`, and the
+    difference is item A10. That function answers what the *request*
+    names — the category plus, for a top-level one, its subcategories.
+    `normalize_categories` then removes one more row nobody asked about:
+    a parent left with no real subcategory loses its "Other" catch-all,
+    because "Other" alongside nothing is meaningless.
+
+    Every step of the delete has to work from *this* set instead, because
+    that catch-all is a real row with real references. Budgets and
+    category patterns foreign-key into it (`NO ACTION`), so pruning it
+    with a budget still pointing at it is an `IntegrityError` and a 500;
+    a posting filed under it is worse still, since that is raw import
+    provenance the delete is not allowed to invalidate. Retiring it with
+    the rest is what makes both safe.
+
+    Returns
+    -------
+    tuple[set[str], dict[str, Category]]
+        The ids leaving the live tree, and the tree left behind.
+    """
+    named = category_ids_to_delete(categories, category_id)
+    remaining = normalize_categories({
+        existing_id: category for existing_id, category in categories.items() if existing_id not in named
+    })
+    return set(categories) - set(remaining), remaining
+
+
 def _posting_count_for_categories(category_ids: set[str], session: Session, user_id: uuid.UUID) -> int:
     """How many raw ledger postings currently carry any of `category_ids` as their category or subcategory.
 
@@ -285,6 +317,10 @@ def get_category_delete_preview(
     only actually call `DELETE /categories/{category_id}` once the user
     accepts.
 
+    Counts over `_categories_leaving_the_tree`, the same set the delete
+    itself acts on, so the number in the confirmation dialog is the
+    number the delete will report having uncategorized.
+
     Returns
     -------
     CategoryDeletePreviewResponse
@@ -298,8 +334,8 @@ def get_category_delete_preview(
     if category_id not in categories:
         raise HTTPException(status_code=404, detail=f"Category {category_id!r} not found")
 
-    ids_to_delete = category_ids_to_delete(categories, category_id)
-    return CategoryDeletePreviewResponse(posting_count=_posting_count_for_categories(ids_to_delete, session, user_id))
+    removed_ids, _remaining = _categories_leaving_the_tree(categories, category_id)
+    return CategoryDeletePreviewResponse(posting_count=_posting_count_for_categories(removed_ids, session, user_id))
 
 
 @router.delete("/categories/{category_id}")
@@ -327,6 +363,11 @@ def delete_category(
     (`Budget`, `CategoryPattern` both require a `category_id`) — see
     `taxonomy.uncategorize_category_ids`.
 
+    "The deleted id(s)" means `_categories_leaving_the_tree`, not the
+    ones the request names. Deleting a category's last real subcategory
+    also removes the parent's now-pointless "Other" catch-all, and that
+    row has references of its own.
+
     Answers 200 with a body rather than the 204 the other row deletes answer:
     this delete has effects beyond the row it names — it cascades to
     subcategories, re-derives the survivors' "Other" catch-alls, and
@@ -349,22 +390,20 @@ def delete_category(
     if category_id not in categories:
         raise HTTPException(status_code=404, detail=f"Category {category_id!r} not found")
 
-    ids_to_delete = category_ids_to_delete(categories, category_id)
-    posting_count = _posting_count_for_categories(ids_to_delete, session, user_id)
-
-    remaining_categories = normalize_categories({
-        existing_id: category for existing_id, category in categories.items() if existing_id not in ids_to_delete
-    })
+    # Every id that actually leaves the tree, which is a superset of the ones
+    # the request names — see `_categories_leaving_the_tree` (A10).
+    removed_ids, remaining_categories = _categories_leaving_the_tree(categories, category_id)
+    posting_count = _posting_count_for_categories(removed_ids, session, user_id)
 
     # The planning and interpretation tables both reference categories, so their
     # cleared/dropped rows land before `replace_categories` prunes the category
     # rows they used to point at.
     _write_category_references(
-        uncategorize_category_ids(_category_references(session, user_id), ids_to_delete), session, user_id
+        uncategorize_category_ids(_category_references(session, user_id), removed_ids), session, user_id
     )
 
     def clear(field_id: str | None) -> str | None:
-        return None if field_id in ids_to_delete else field_id
+        return None if field_id in removed_ids else field_id
 
     # Only the overrides that actually reference a deleted category/subcategory get touched — every
     # other posting's override is left alone, unlike the whole-table writer this
@@ -375,7 +414,7 @@ def delete_category(
             update={"category_id": clear(override.category_id), "subcategory_id": clear(override.subcategory_id)}
         )
         for posting_id, override in overrides.items()
-        if override.category_id in ids_to_delete or override.subcategory_id in ids_to_delete
+        if override.category_id in removed_ids or override.subcategory_id in removed_ids
     }
     save_overrides_for_postings(list(changed_overrides.keys()), changed_overrides, session, user_id)
 
@@ -383,7 +422,7 @@ def delete_category(
     # tree — with no successor, so every posting imported under one resolves to
     # uncategorized. Retiring rather than deleting is what makes the stored
     # postings' foreign keys safe without rewriting a single one of them.
-    retire_categories(session, user_id, dict.fromkeys(ids_to_delete))
+    retire_categories(session, user_id, dict.fromkeys(removed_ids))
 
     # Last. The whole tree is passed because a delete genuinely is
     # category-graph-wide — a top-level delete takes its subcategories with it,
