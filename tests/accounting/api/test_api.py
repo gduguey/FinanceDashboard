@@ -3417,6 +3417,56 @@ def test_get_exchange_rate_history_after_sync(client, monkeypatch) -> None:
     assert [row["rate"] for row in body] == pytest.approx([1.9, 2.1])
 
 
+def test_exchange_rate_coverage_is_null_when_nothing_is_converted(client) -> None:
+    """Item A5: a single-currency user has no clamp to be told about, so the note must stay silent.
+
+    Mirrors `api.dependencies._rates_by_date` returning `None` for the
+    same case — with the base currency the only one in play, every rate
+    is `1.0` on every day and no figure is an approximation.
+    """
+    _create_account(client, name="Chase Checking", kind="checking", institution="Chase", currency="USD")
+
+    response = client.get("/api/v1/accounting/exchange-rates/coverage")
+
+    assert response.status_code == 200
+    assert response.json() == {"earliest": None, "latest": None}
+
+
+def test_exchange_rate_coverage_reports_the_span_once_a_second_currency_is_in_play(client, monkeypatch) -> None:
+    """The window a client compares an income statement's own start against."""
+    _mock_fetch(monkeypatch)
+    exchange_rates.update_rate_history_cache(accounting_api.state.config)
+    _create_account(client, name="BNP Checking", kind="checking", institution="BNP", currency="EUR")
+
+    response = client.get("/api/v1/accounting/exchange-rates/coverage")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["earliest"] == (date.today() - timedelta(days=1)).isoformat()
+    assert body["latest"] == date.today().isoformat()
+
+
+def test_exchange_rate_coverage_reports_a_span_for_a_non_base_display_currency_alone(client, monkeypatch) -> None:
+    """Holding only USD but *displaying* in EUR still converts, so it still clamps."""
+    _mock_fetch(monkeypatch)
+    exchange_rates.update_rate_history_cache(accounting_api.state.config)
+    _create_account(client, name="Chase Checking", kind="checking", institution="Chase", currency="USD")
+
+    response = client.get("/api/v1/accounting/exchange-rates/coverage", params={"display_currency": "EUR"})
+
+    assert response.status_code == 200
+    assert response.json()["earliest"] == (date.today() - timedelta(days=1)).isoformat()
+
+
+def test_exchange_rate_coverage_400s_when_a_needed_currency_was_never_synced(client) -> None:
+    """The same refusal every flow endpoint makes, rather than reporting a window for rates that cannot be built."""
+    _create_account(client, name="BNP Checking", kind="checking", institution="BNP", currency="EUR")
+
+    response = client.get("/api/v1/accounting/exchange-rates/coverage")
+
+    assert response.status_code == 400
+
+
 def test_post_account_creates_a_new_account(client) -> None:
     response = client.post(
         "/api/v1/accounting/accounts",

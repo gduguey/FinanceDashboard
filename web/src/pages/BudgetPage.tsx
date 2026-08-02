@@ -2,6 +2,7 @@ import { ChevronRight, ChevronsDownUp, ChevronsUpDown } from 'lucide-react'
 import { Fragment, useEffect, useRef, useState } from 'react'
 import { MonthSelect } from '@/components/accounting/MonthSelect'
 import { PageHeader } from '@/components/layout/PageHeader'
+import { ClampedRateNote } from '@/components/shared/ClampedRateNote'
 import { DisplayCurrencyToggle } from '@/components/shared/DisplayCurrencyToggle'
 import { lazyChart } from '@/components/shared/lazyChart'
 import { NoAccountsYetBanner } from '@/components/shared/NoAccountsYetBanner'
@@ -411,6 +412,7 @@ export function BudgetPage() {
                 ? 'One budget per category, applied to every month — the month picker only changes which month’s actual spend is shown here.'
                 : `Budgets scoped to this one month — actual spend below is for this month too.`}
             </p>
+            <ClampedRateNote start={start} displayCurrency={displayCurrency} />
             {storeLoading ? (
               <Skeleton className="h-64 w-full" />
             ) : expenseCategories.length === 0 ? (

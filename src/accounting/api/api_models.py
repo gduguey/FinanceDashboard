@@ -165,6 +165,31 @@ class CurrentExchangeRate(BaseModel):
     window_days: int
 
 
+class RateCoverage(BaseModel):
+    """How far back the rate history this user's figures are converted with actually reaches.
+
+    Response body for `GET /exchange-rates/coverage`, and item A5's whole
+    server half. A dated flow older than the cache has no trailing mean of
+    its own and is converted at the oldest one on file
+    (`ledger.currency.with_converted_amount` clamps it); that clamp is
+    right, documented, and until now invisible on screen. This is the one
+    fact a client needs to say so: an income statement, budget or spend
+    curve whose window starts before `earliest` contains at least one
+    figure computed at a rate that is not its own date's.
+
+    Both fields are `None` when no conversion happens at all — the
+    display currency and every currency this user holds are the base
+    currency, so every rate is `1.0` on every day and there is nothing to
+    clamp. That mirrors `api.dependencies._rates_by_date` returning
+    `None` for the same case, and it is what keeps the note silent for a
+    single-currency user rather than warning them about arithmetic that
+    never ran.
+    """
+
+    earliest: date | None
+    latest: date | None
+
+
 class ExchangeRateHistoryPoint(BaseModel):
     """One cached day's raw and smoothed exchange rate, for `GET /exchange-rates/history`."""
 

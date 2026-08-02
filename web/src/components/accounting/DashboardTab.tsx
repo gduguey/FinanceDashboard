@@ -1,6 +1,7 @@
 import { useMemo } from 'react'
 import type { GoalFlow } from '@/components/accounting/CashflowSankeyChart'
 import { PeriodFilterBar } from '@/components/accounting/PeriodFilter'
+import { ClampedRateNote } from '@/components/shared/ClampedRateNote'
 import { lazyChart } from '@/components/shared/lazyChart'
 import { NoAccountsYetBanner } from '@/components/shared/NoAccountsYetBanner'
 import { useCategoryTotals } from '@/hooks/useAccountingData'
@@ -86,6 +87,7 @@ export function DashboardTab({
     <div className="space-y-6">
       {!hasAnyRealAccount(Object.values(accounts)) && <NoAccountsYetBanner />}
       <PeriodFilterBar filter={filter} accounts={accounts} tags={tags} />
+      <ClampedRateNote start={filter.period.start} displayCurrency={displayCurrency} />
       <CategoryDrilldownPie
         categoryTotals={categoryTotals ?? []}
         scope={drilldownScope}

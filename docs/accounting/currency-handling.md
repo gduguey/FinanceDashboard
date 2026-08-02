@@ -52,6 +52,19 @@ turns into a null amount that every `sum` then silently skips, producing a
 wrong total that looks like a right one — and refusing the request, which
 would make a single old posting a 400 for the whole income statement.
 
+**And the user is told.** `GET /exchange-rates/coverage` reports the span
+of rate history this user's figures are actually converted with —
+`{earliest: null, latest: null}` when no conversion happens for them at
+all, which is exactly when `_rates_by_date` returns `None`. The SPA's
+`ClampedRateNote` renders under the Insights period bar and on the Budget
+page, and only when the chosen window starts before `earliest`: "Amounts
+dated before *1 Aug 2024* are converted at the oldest exchange rate on
+file." A caveat, in muted text, not a warning — the figure is approximate,
+not wrong. It over-warns in exactly one case (a window reaching past the
+cache that happens to hold no non-base row back there); the alternative is
+counting clamped rows inside every aggregation, which is a far larger
+change for a strictly weaker signal. Item A5.
+
 **The currency axis has the same exposure, and there the answer is the
 opposite one.** A row whose currency the rate table has no entry for — or
 whose currency column is null — joins to nothing and lands in exactly that
