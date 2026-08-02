@@ -49,9 +49,8 @@ from accounting.repositories.interpretation import (
     load_posting_merges,
     load_transfer_links,
     load_transfer_rules,
-    replace_posting_merges,
-    replace_rule_exclusions,
-    replace_transfer_rules,
+    upsert_posting_merge,
+    upsert_transfer_rule,
 )
 from accounting.repositories.accounts import insert_manual_transfers, load_manual_transfers, replace_accounts
 from accounting.repositories.planning import insert_goal, load_goal_contributions, upsert_goal_contribution
@@ -575,7 +574,7 @@ def test_write_ledger_dropping_a_transaction_kept_by_a_posting_merge_deletes_the
     _register_account(db_session, test_user_id)
     _write_ledger(_frame(_posting("p1", "t1"), _posting("p2", "t2")), db_session, user_id=test_user_id)
     merge = PostingMerge(merge_id="m1", kept_transaction_id="t1", duplicate_transaction_ids=["t2"])
-    replace_posting_merges(db_session, test_user_id, [merge])
+    upsert_posting_merge(merge, db_session, test_user_id)
     db_session.commit()
 
     # Dropping t1, the merge's own kept_transaction_id, must not raise — and
@@ -595,7 +594,7 @@ def test_write_ledger_dropping_a_duplicate_transaction_removes_just_that_one_fro
         _frame(_posting("p1", "t1"), _posting("p2", "t2"), _posting("p3", "t3")), db_session, user_id=test_user_id
     )
     merge = PostingMerge(merge_id="m1", kept_transaction_id="t1", duplicate_transaction_ids=["t2", "t3"])
-    replace_posting_merges(db_session, test_user_id, [merge])
+    upsert_posting_merge(merge, db_session, test_user_id)
     db_session.commit()
 
     # Dropping just one duplicate (t2) must not raise, and the merge itself
@@ -613,8 +612,7 @@ def test_write_ledger_dropping_a_transaction_referenced_by_a_transfer_rule_exclu
     _register_account(db_session, test_user_id)
     _write_ledger(_frame(_posting("p1", "t1")), db_session, user_id=test_user_id)
     rule = TransferRule(rule_id="r1", description_contains="x", excluded_transaction_ids=["t1"])
-    replace_transfer_rules(db_session, test_user_id, [rule])
-    replace_rule_exclusions(db_session, test_user_id, [rule])
+    upsert_transfer_rule(rule, db_session, test_user_id)
     db_session.commit()
 
     # Dropping the excluded transaction itself must not raise — the
