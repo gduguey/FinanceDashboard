@@ -551,12 +551,18 @@ def test_a_category_write_dirties_only_what_it_can_change(seeded_ledger, client,
     so a write that enqueues it when it did not change it is over-invalidating
     and a write that fails to enqueue it when it did is silently wrong.
 
-    Two things this deliberately does not assert. It does not assert an empty
-    queue after a rename: `api.routers.categories._write_category_references`
-    rewrites `posting_splits` whole on every rename, merging or not, so the
-    split's transaction is enqueued by *that* table's trigger doing its job.
-    And it does not assert the merge enqueues nothing else, for the same
-    reason. What it pins is which writes reach the categorized transaction.
+    It does not assert the *merge* enqueues nothing else:
+    `api.routers.categories._write_category_references` repoints and rewrites
+    `posting_splits` whole, so the split's transaction is enqueued by that
+    table's trigger doing its job. What it pins there is which writes reach
+    the categorized transaction.
+
+    It does assert an empty queue after a rename that merges nothing, which
+    is item C10 and used to be false: the same reference write ran whether or
+    not the rename repointed anything, so a display-name change enqueued
+    every transaction that has a split. `_write_category_references` now
+    compares each collection against what it loaded and writes only the ones
+    that moved.
     """
     drain(db_session, DEFAULT_USER_ID)
     categorized = seeded_ledger["stationery_transaction_id"]
@@ -582,6 +588,10 @@ def test_a_category_write_dirties_only_what_it_can_change(seeded_ledger, client,
         "and `name` does not reach the resolved frame"
     )
     assert dirtied_by_the_rename != every_transaction, "a rename still invalidates the whole ledger"
+    assert dirtied_by_the_rename == set(), (
+        "a rename that merges nothing invalidated something; it repoints no reference, so there is nothing "
+        "for any trigger to have seen change (item C10)"
+    )
 
     drain(db_session, DEFAULT_USER_ID)
     _rename_a_category_into_another(client, seeded_ledger, db_session)

@@ -33,7 +33,22 @@ export type TargetAllocationPatch = Record<string, number | null>
 export type OpenLot = components['schemas']['OpenLotRow']
 export type ClosedLot = components['schemas']['ClosedLotRow']
 export type SymbolRollup = components['schemas']['SymbolRollupRow']
-export type LotsTable = components['schemas']['LotsTable']
+export type OpenLotPage = components['schemas']['OpenLotPage']
+export type ClosedLotPage = components['schemas']['ClosedLotPage']
+export type SymbolRollupPage = components['schemas']['SymbolRollupPage']
+
+// The three lot collections assembled into the one shape every consumer
+// wants. Not a schema alias any more: the server used to answer all three in
+// a single unbounded `LotsTable` response, and each is its own paged
+// collection now (C4a), because their lengths are independent and one page
+// envelope can only cut one collection. `api.lots()` walks all three, so
+// nothing downstream had to change — see its own comment for why walking is
+// the right answer here rather than showing a page.
+export interface LotsTable {
+  open_lots: OpenLot[]
+  closed_lots: ClosedLot[]
+  symbol_rollup: SymbolRollup[]
+}
 export type RiskStat = components['schemas']['RiskStat']
 export type DataQualityRow = components['schemas']['DataQualityRow']
 export type LedgerEvent = components['schemas']['LedgerEvent']

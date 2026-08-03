@@ -247,16 +247,41 @@ def _category_references(session: Session, user_id: uuid.UUID) -> CategoryRefere
     )
 
 
-def _write_category_references(references: CategoryReferences, session: Session, user_id: uuid.UUID) -> None:
-    """Write each repointed/cleared collection back through its own repository.
+def _write_category_references(
+    before: CategoryReferences, after: CategoryReferences, session: Session, user_id: uuid.UUID
+) -> None:
+    """Write back each repointed/cleared collection that a rename or delete actually changed.
 
     Always called *before* the category rows they used to reference are
     pruned or retired, so a foreign key never briefly points at a row
     that is about to disappear.
+
+    **Per collection, and only when it moved** (item C10). All three
+    repositories here are whole-collection writers and two of them are
+    wipe-and-reinsert, so writing an unchanged collection is not free: the
+    `posting_splits` write enqueues every transaction that has a split into
+    `resolved_postings_dirty`, whatever the rename did. That made a rename
+    which only changes a display name — the common case, and the one
+    `plan_category_rename` reports as an empty `id_remap` — cost a
+    projection recompute bounded by the number of splits rather than by
+    nothing. Comparing before against after covers the delete side too: a
+    delete of a category no budget, pattern or split ever referenced now
+    writes nothing either, which the "skip when the remap is empty" fix
+    this item proposed would have missed.
+
+    The comparison is by value, over frozen pydantic models, and errs
+    towards writing: `remap_category_ids` re-sorts `budgets` while
+    arbitrating collisions, so a merge writes that collection even where
+    its contents are unchanged. Over-invalidating is the safe direction and
+    a merge is a real change; what this removes is the write that happens
+    when nothing is.
     """
-    replace_budgets(session, user_id, references.budgets)
-    replace_category_patterns(session, user_id, references.category_patterns.values())
-    replace_posting_splits(session, user_id, references.posting_splits.values())
+    if after.budgets != before.budgets:
+        replace_budgets(session, user_id, after.budgets)
+    if after.category_patterns != before.category_patterns:
+        replace_category_patterns(session, user_id, after.category_patterns.values())
+    if after.posting_splits != before.posting_splits:
+        replace_posting_splits(session, user_id, after.posting_splits.values())
 
 
 def _categories_leaving_the_tree(
@@ -398,9 +423,8 @@ def delete_category(
     # The planning and interpretation tables both reference categories, so their
     # cleared/dropped rows land before `replace_categories` prunes the category
     # rows they used to point at.
-    _write_category_references(
-        uncategorize_category_ids(_category_references(session, user_id), removed_ids), session, user_id
-    )
+    references = _category_references(session, user_id)
+    _write_category_references(references, uncategorize_category_ids(references, removed_ids), session, user_id)
 
     def clear(field_id: str | None) -> str | None:
         return None if field_id in removed_ids else field_id
@@ -583,8 +607,10 @@ def post_category_rename(
 
     # Repointed budgets, category patterns and posting splits are written by
     # their own repositories, before `replace_categories` below prunes the
-    # merged-away category rows they used to reference.
-    _write_category_references(remap_category_ids(_category_references(session, user_id), id_remap), session, user_id)
+    # merged-away category rows they used to reference. A rename that merges
+    # nothing repoints nothing and therefore writes nothing (item C10).
+    references = _category_references(session, user_id)
+    _write_category_references(references, remap_category_ids(references, id_remap), session, user_id)
 
     if id_remap:
 

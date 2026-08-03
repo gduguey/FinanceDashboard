@@ -263,11 +263,17 @@ def test_a_literal_read_is_registered_before_the_item_route_that_would_shadow_it
 # whatever the schema currently says could never catch. `GET /trades/ledger/export`
 # was unbounded until C3 and is the reason these assertions exist — the
 # contract document claimed this file enforced them, and it asserted nothing
-# about pagination at all.
+# about pagination at all. The three `/trades/lots/*` reads joined in item
+# C4a, replacing one unbounded `GET /lots` that carried all three collections;
+# `GET /trades/sync-runs` was already paged and simply missing from this list.
 _PAGED_READS = {
     "/api/v1/accounting/ledger/export": "posting",
     "/api/v1/accounting/postings": "transaction",
     "/api/v1/trades/ledger/export": "event",
+    "/api/v1/trades/lots/open": "lot",
+    "/api/v1/trades/lots/closed": "lot",
+    "/api/v1/trades/lots/symbols": "symbol",
+    "/api/v1/trades/sync-runs": "run",
 }
 
 

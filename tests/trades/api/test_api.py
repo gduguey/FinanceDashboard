@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 import db.models as dbm
 from sqlalchemy import text
 from db.session import get_db
-from http_api.pagination import PAGE_LIMIT_MAX
+from http_api.pagination import PAGE_LIMIT_DEFAULT, PAGE_LIMIT_MAX
 from tests.conftest import DEFAULT_USER_ID
 from trades import api as trades_api
 from trades.brokers.ibkr.main import _write_ledger
@@ -517,11 +517,49 @@ def test_ensure_symbol_priced_maps_unknown_symbol_to_422(client, monkeypatch) ->
     assert response.status_code == 422
 
 
-def test_lots_reports_open_and_closed_lots(client) -> None:
-    body = client.get("/api/v1/trades/lots", params={"as_of": "2026-01-03"}).json()
-    assert len(body["open_lots"]) == 1
-    assert len(body["closed_lots"]) == 1
-    assert len(body["symbol_rollup"]) == 1
+@pytest.mark.parametrize(("path", "window_unit"), [("open", "lot"), ("closed", "lot"), ("symbols", "symbol")])
+def test_each_lot_collection_answers_with_the_page_envelope(client, path, window_unit) -> None:
+    body = client.get(f"/api/v1/trades/lots/{path}", params={"as_of": "2026-01-03"}).json()
+    assert len(body["items"]) == 1
+    assert body["total"] == 1
+    assert body["window_unit"] == window_unit
+    assert body["offset"] == 0
+    assert body["limit"] == PAGE_LIMIT_DEFAULT
+
+
+@pytest.mark.parametrize("path", ["open", "closed", "symbols"])
+def test_a_lot_page_clamps_an_oversized_limit_rather_than_rejecting_it(client, path) -> None:
+    body = client.get(f"/api/v1/trades/lots/{path}", params={"limit": PAGE_LIMIT_MAX * 2}).json()
+    assert body["limit"] == PAGE_LIMIT_MAX
+
+
+@pytest.mark.parametrize("path", ["open", "closed", "symbols"])
+def test_a_lot_page_past_the_end_of_the_collection_is_empty_rather_than_an_error(client, path) -> None:
+    """What ends a client's page walk: the total keeps counting the whole collection."""
+    body = client.get(f"/api/v1/trades/lots/{path}", params={"offset": 500}).json()
+    assert body["items"] == []
+    assert body["total"] == 1
+
+
+def test_the_lot_pages_compose_into_the_whole_collection(client) -> None:
+    """Walking one lot at a time must reconstruct the collection exactly, in the same order.
+
+    A page's window is a slice of a sort the server chose, so this is the
+    property that says the two agree — a per-page order that differs from the
+    whole-collection order both repeats and drops lots, silently, and a lots
+    table is a tax figure.
+    """
+    for path in ("open", "closed", "symbols"):
+        whole = client.get(f"/api/v1/trades/lots/{path}", params={"limit": PAGE_LIMIT_MAX}).json()["items"]
+        walked = []
+        offset = 0
+        while True:
+            page = client.get(f"/api/v1/trades/lots/{path}", params={"limit": 1, "offset": offset}).json()
+            walked.extend(page["items"])
+            offset += page["limit"]
+            if offset >= page["total"]:
+                break
+        assert walked == whole, f"/lots/{path} pages do not compose into the whole collection"
 
 
 def test_risk_reports_max_drawdown(client) -> None:

@@ -7,8 +7,10 @@ ledger before calling) state is needed.
 
 The walk is a genuinely sequential fold: each event's effect depends on
 open lots left by every prior event, so it is a plain `for` loop rather
-than a vectorized expression. The per-event arithmetic itself
-(`lots.consume_fifo`, `lots.apply_split`) is vectorized.
+than a vectorized expression. Each event costs O(1) amortized work in
+`lots.LotBook`, so one replay is linear in the ledger — see that class
+for the two representation choices that make it so, and item C4b for the
+quadratic it replaced.
 """
 
 from __future__ import annotations
@@ -18,15 +20,7 @@ from typing import TYPE_CHECKING
 
 import polars as pl
 
-from trades.ledger.lots import (
-    ClosedLot,
-    Lot,
-    accrue_dividend,
-    apply_split,
-    closed_lots_to_frame,
-    consume_fifo,
-    lots_to_frame,
-)
+from trades.ledger.lots import ClosedLot, LotBook, closed_lots_to_frame, lots_to_frame
 from trades.ledger.signs import cash_effect, signed_cash_effect
 from trades.utils.frames import collect_if_lazy
 
@@ -80,9 +74,14 @@ def replay_ledger(
     dollar is identical, so there is no cost-basis heterogeneity for FIFO
     to track, unlike a real symbol where different buys have different
     prices. Each `DIVIDEND` also accrues into the open lots of its symbol
-    (see `lots.accrue_dividend`), pro rata by shares held at that moment —
-    a lot opened after the dividend was paid gets none of it, including a
-    lot the dividend itself created via reinvestment.
+    (see `lots.LotBook.accrue_dividend`), pro rata by shares held at that
+    moment — a lot opened after the dividend was paid gets none of it,
+    including a lot the dividend itself created via reinvestment.
+
+    A `DIVIDEND` or `SPLIT` on a symbol no `BUY` has ever opened a lot for
+    still moves cash and is otherwise skipped: there is no book to credit
+    or adjust. That is the same outcome the version this replaced reached
+    by handing an empty lot list to a function that returned it unchanged.
 
     Parameters
     ----------
@@ -109,7 +108,7 @@ def replay_ledger(
     unhandled type is caught rather than a fall-through branch here.
     """
     rows = collect_if_lazy(ledger)
-    open_lots_by_symbol: dict[str, list[Lot]] = {}
+    books: dict[str, LotBook] = {}
     closed_lots: list[ClosedLot] = []
     cash_balance = 0.0
     withholding_by_symbol_date = _withholding_by_symbol_date(rows) if net_dividends else {}
@@ -126,37 +125,38 @@ def replay_ledger(
         cash_balance += cash_effect(event_type, amount)
 
         if event_type == "DIVIDEND":
+            book = books.get(symbol)
+            if book is None:
+                continue
             accrual_amount = amount
             if net_dividends:
                 wh = withholding_by_symbol_date.get((symbol, row["event_datetime"].date()), 0.0)
                 accrual_amount = max(0.0, amount - wh)
-            open_lots_by_symbol[symbol] = accrue_dividend(open_lots_by_symbol.get(symbol, []), accrual_amount)
+            book.accrue_dividend(accrual_amount)
         elif event_type == "BUY":
-            open_lots_by_symbol.setdefault(symbol, []).append(
-                Lot(
-                    lot_id=row["event_id"],
-                    symbol=symbol,
-                    opened_at=row["event_datetime"],
-                    shares=row["shares"],
-                    cost_per_share=row["price"],
-                )
+            books.setdefault(symbol, LotBook(symbol)).open(
+                lot_id=row["event_id"],
+                opened_at=row["event_datetime"],
+                shares=row["shares"],
+                cost_per_share=row["price"],
             )
         elif event_type == "SELL":
-            remaining, newly_closed = consume_fifo(
-                open_lots_by_symbol.get(symbol, []),
-                shares_to_consume=row["shares"],
-                exit_price=row["price"],
-                closed_at=row["event_datetime"],
-                closed_by_event_id=row["event_id"],
-                long_term_holding_days=config.ledger.long_term_holding_days,
+            closed_lots.extend(
+                books.setdefault(symbol, LotBook(symbol)).consume_fifo(
+                    shares_to_consume=row["shares"],
+                    exit_price=row["price"],
+                    closed_at=row["event_datetime"],
+                    closed_by_event_id=row["event_id"],
+                    long_term_holding_days=config.ledger.long_term_holding_days,
+                )
             )
-            open_lots_by_symbol[symbol] = remaining
-            closed_lots.extend(newly_closed)
         elif event_type == "SPLIT":
-            ratio = float(row["meta"]["ratio"])
-            open_lots_by_symbol[symbol] = apply_split(open_lots_by_symbol.get(symbol, []), symbol, ratio)
+            book = books.get(symbol)
+            if book is None:
+                continue
+            book.apply_split(float(row["meta"]["ratio"]))
 
-    all_open_lots = [lot for lots in open_lots_by_symbol.values() for lot in lots]
+    all_open_lots = [lot for book in books.values() for lot in book.open_lots()]
     return ReplayResult(
         open_lots=lots_to_frame(all_open_lots),
         closed_lots=closed_lots_to_frame(closed_lots),

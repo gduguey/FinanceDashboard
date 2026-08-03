@@ -3681,7 +3681,7 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/v1/trades/lots': {
+  '/api/v1/trades/lots/open': {
     parameters: {
       query?: never
       header?: never
@@ -3689,20 +3689,102 @@ export interface paths {
       cookie?: never
     }
     /**
-     * Get Lots
-     * @description Return the trade-level table: open lots, closed lots, per-symbol rollup.
+     * Get Open Lots
+     * @description Return one page of the open lots, oldest-opened first, with each lot's return since it opened.
+     *
+     *     Parameters
+     *     ----------
+     *     as_of
+     *         The date to price every open lot as of. Defaults to today.
+     *     limit
+     *         How many lots to return. Clamped to `PAGE_LIMIT_MAX`.
+     *     offset
+     *         How many lots to skip.
      *
      *     Returns
      *     -------
-     *     LotsTable
-     *         `open_lots`, `closed_lots`, `symbol_rollup`.
+     *     OpenLotPage
+     *         The page's lots, plus the total a client needs to ask for the next one.
      *
-     *     Raises
-     *     ------
-     *     HTTPException
-     *         404 if no ledger is cached yet; 422 if a required price is missing.
+     *     The 404 for an uncached ledger and the 422 for a missing price both come
+     *     out of `_lots_table`.
      */
-    get: operations['get_lots_api_v1_trades_lots_get']
+    get: operations['get_open_lots_api_v1_trades_lots_open_get']
+    put?: never
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/v1/trades/lots/closed': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /**
+     * Get Closed Lots
+     * @description Return one page of the closed lots, oldest-closed first, with each lot's excess return over a HYSA.
+     *
+     *     Parameters
+     *     ----------
+     *     as_of
+     *         Unused by the figures on a closed lot, whose window is finished;
+     *         accepted so all three lot routes take the same query.
+     *     limit
+     *         How many lots to return. Clamped to `PAGE_LIMIT_MAX`.
+     *     offset
+     *         How many lots to skip.
+     *
+     *     Returns
+     *     -------
+     *     ClosedLotPage
+     *         The page's lots, plus the total a client needs to ask for the next one.
+     *
+     *     The 404 for an uncached ledger and the 422 for a missing price both come
+     *     out of `_lots_table`.
+     */
+    get: operations['get_closed_lots_api_v1_trades_lots_closed_get']
+    put?: never
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/v1/trades/lots/symbols': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /**
+     * Get Symbol Rollup
+     * @description Return one page of the per-symbol rollup, by symbol: lifecycle stats and a money-weighted return.
+     *
+     *     Parameters
+     *     ----------
+     *     as_of
+     *         The date to value each symbol's remaining holding as of. Defaults to today.
+     *     limit
+     *         How many symbols to return. Clamped to `PAGE_LIMIT_MAX`.
+     *     offset
+     *         How many symbols to skip.
+     *
+     *     Returns
+     *     -------
+     *     SymbolRollupPage
+     *         The page's symbols, plus the total a client needs to ask for the next one.
+     *
+     *     The 404 for an uncached ledger and the 422 for a missing price both come
+     *     out of `_lots_table`.
+     */
+    get: operations['get_symbol_rollup_api_v1_trades_lots_symbols_get']
     put?: never
     post?: never
     delete?: never
@@ -5250,6 +5332,29 @@ export interface components {
       amount: number
     }
     /**
+     * ClosedLotPage
+     * @description One page of the closed lots, cut by lot and ordered oldest-closed first.
+     *
+     *     Shares `OpenLotPage`'s window unit rather than inventing a
+     *     `closed_lot` one: both count tax lots, and a client walking either does
+     *     the identical arithmetic. What distinguishes them is the row type.
+     */
+    ClosedLotPage: {
+      /** Items */
+      items: components['schemas']['ClosedLotRow'][]
+      /**
+       * Window Unit
+       * @constant
+       */
+      window_unit: 'lot'
+      /** Total */
+      total: number
+      /** Limit */
+      limit: number
+      /** Offset */
+      offset: number
+    }
+    /**
      * ClosedLotRow
      * @description One closed lot, with its total return and its excess over a HYSA, over its holding window.
      *
@@ -6290,18 +6395,6 @@ export interface components {
       mistral_key_set: boolean
     }
     /**
-     * LotsTable
-     * @description The trade-level table: open lots, closed lots, per-symbol rollup.
-     */
-    LotsTable: {
-      /** Open Lots */
-      open_lots: components['schemas']['OpenLotRow'][]
-      /** Closed Lots */
-      closed_lots: components['schemas']['ClosedLotRow'][]
-      /** Symbol Rollup */
-      symbol_rollup: components['schemas']['SymbolRollupRow'][]
-    }
-    /**
      * ManualOverride
      * @description A user's direct edit to one posting, always winning over whatever a rule would have produced.
      *
@@ -6525,6 +6618,36 @@ export interface components {
       accounts: components['schemas']['NetWorthAccountRow'][]
       /** Other Assets */
       other_assets: components['schemas']['NetWorthOtherAssetRow'][]
+    }
+    /**
+     * OpenLotPage
+     * @description One page of the open lots, cut by lot and ordered oldest-opened first.
+     *
+     *     The trade-level table used to be one unbounded `LotsTable` response
+     *     carrying all three of its collections at once. It is three paged
+     *     collections now (item C4a), because their lengths are independent: one
+     *     envelope can only cut one collection, and cutting by *symbol* instead
+     *     would have bounded nothing — a single symbol can hold every lot in the
+     *     ledger.
+     *
+     *     Its window unit is `lot`, which is also what `items` counts: nothing
+     *     here groups rows that have to stay together on one page, unlike
+     *     `accounting`'s `GET /postings`.
+     */
+    OpenLotPage: {
+      /** Items */
+      items: components['schemas']['OpenLotRow'][]
+      /**
+       * Window Unit
+       * @constant
+       */
+      window_unit: 'lot'
+      /** Total */
+      total: number
+      /** Limit */
+      limit: number
+      /** Offset */
+      offset: number
     }
     /**
      * OpenLotRow
@@ -7321,6 +7444,30 @@ export interface components {
       was_stale: boolean
       /** Last Price Date */
       last_price_date: string | null
+    }
+    /**
+     * SymbolRollupPage
+     * @description One page of the per-symbol rollup, cut by symbol and ordered by symbol.
+     *
+     *     Bounded like the other two even though the number of distinct symbols a
+     *     portfolio holds is small: a collection with no page is a collection
+     *     whose size is somebody's assumption, and this one's rows each carry an
+     *     XIRR solve.
+     */
+    SymbolRollupPage: {
+      /** Items */
+      items: components['schemas']['SymbolRollupRow'][]
+      /**
+       * Window Unit
+       * @constant
+       */
+      window_unit: 'symbol'
+      /** Total */
+      total: number
+      /** Limit */
+      limit: number
+      /** Offset */
+      offset: number
     }
     /**
      * SymbolRollupRow
@@ -11801,10 +11948,14 @@ export interface operations {
       }
     }
   }
-  get_lots_api_v1_trades_lots_get: {
+  get_open_lots_api_v1_trades_lots_open_get: {
     parameters: {
       query?: {
         as_of?: string | null
+        /** @description How many lots to return. */
+        limit?: number
+        /** @description How many lots to skip. */
+        offset?: number
       }
       header?: never
       path?: never
@@ -11818,7 +11969,77 @@ export interface operations {
           [name: string]: unknown
         }
         content: {
-          'application/json': components['schemas']['LotsTable']
+          'application/json': components['schemas']['OpenLotPage']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  get_closed_lots_api_v1_trades_lots_closed_get: {
+    parameters: {
+      query?: {
+        as_of?: string | null
+        /** @description How many lots to return. */
+        limit?: number
+        /** @description How many lots to skip. */
+        offset?: number
+      }
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['ClosedLotPage']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  get_symbol_rollup_api_v1_trades_lots_symbols_get: {
+    parameters: {
+      query?: {
+        as_of?: string | null
+        /** @description How many symbols to return. */
+        limit?: number
+        /** @description How many symbols to skip. */
+        offset?: number
+      }
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['SymbolRollupPage']
         }
       }
       /** @description Validation Error */

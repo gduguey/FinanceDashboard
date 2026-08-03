@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from dataclasses import asdict
 from datetime import UTC, date, datetime
-from typing import TYPE_CHECKING, Annotated, cast
+from typing import TYPE_CHECKING, Annotated, Any, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
@@ -19,20 +19,22 @@ from trades.api.api_models import (
     AnnualTaxRow,
     CashHistoryPoint,
     CashSitting,
+    ClosedLotPage,
     ClosedLotRow,
     DataQualityRow,
     DollarChart,
     DollarChartPoint,
     GrowthOf100Point,
     LedgerEventPage,
-    LotsTable,
     MonthlyPnlBySymbolRow,
     MonthlyPnlRow,
+    OpenLotPage,
     OpenLotRow,
     Overview,
     ReallocationMarker,
     RiskStat,
     SalePreviewRow,
+    SymbolRollupPage,
     SymbolRollupRow,
     TaxOwedRow,
     TaxReport,
@@ -358,18 +360,27 @@ def get_tax_report(
     )
 
 
-@router.get("/lots")
-def get_lots(
-    session: Annotated[Session, Depends(get_db)],
-    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
-    as_of: date | None = None,
-) -> LotsTable:
-    """Return the trade-level table: open lots, closed lots, per-symbol rollup.
+_LOT_LIMIT = Annotated[int, Query(ge=1, description="How many lots to return.")]
+_SYMBOL_LIMIT = Annotated[int, Query(ge=1, description="How many symbols to return.")]
+_LOT_OFFSET = Annotated[int, Query(ge=0, description="How many lots to skip.")]
+_SYMBOL_OFFSET = Annotated[int, Query(ge=0, description="How many symbols to skip.")]
+
+
+def _lots_table(session: Session, user_id: uuid.UUID, as_of: date | None) -> dashboard.LotsTable:
+    """FIFO-match the whole ledger, for one of the three lot collections to be paged out of.
+
+    Each of the three routes below calls this, so a client walking all three
+    pays for one match per request rather than one for the screen. That is
+    affordable and was not: the match is `ledger.replay.replay_ledger`,
+    which cost 3.7 s over a 10,000-event ledger until item C4b made it
+    linear, and being unaffordable is exactly why item C4a was scoped into
+    PR D and then declined there — paging a read that recomputes everything
+    per page multiplies the work by the page count. At 39 ms it does not.
 
     Returns
     -------
     LotsTable
-        `open_lots`, `closed_lots`, `symbol_rollup`.
+        All three collections, as polars frames.
 
     Raises
     ------
@@ -379,13 +390,143 @@ def get_lots(
     ledger = _load_ledger(session, user_id)
     settings = dashboard.load_settings(session, user_id)
     try:
-        table = dashboard.lots_table(ledger, _config(), settings, as_of or datetime.now(tz=UTC).date())
+        return dashboard.lots_table(ledger, _config(), settings, as_of or datetime.now(tz=UTC).date())
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
-    return LotsTable(
-        open_lots=[OpenLotRow(**row) for row in table.open_lots.to_dicts()],
-        closed_lots=[ClosedLotRow(**row) for row in table.closed_lots.to_dicts()],
-        symbol_rollup=[SymbolRollupRow(**row) for row in table.symbol_rollup.to_dicts()],
+
+
+def _window(rows: pl.DataFrame, order_by: list[str], limit: int, offset: int) -> list[dict[str, Any]]:
+    """One page's worth of rows, in a total order paging can rely on.
+
+    Sorted rather than left in replay order, which is deterministic but
+    undocumented: two requests for two different windows of one collection
+    have to agree on what row 200 is, or a page walk both skips and repeats
+    rows. The empty frame is returned as-is because `symbol_rollup` carries
+    no columns when there are no symbols, and sorting it by name would
+    raise.
+
+    Returns
+    -------
+    list[dict[str, Any]]
+    """
+    if rows.is_empty():
+        return []
+    return rows.sort(order_by).slice(offset, limit).to_dicts()
+
+
+@router.get("/lots/open")
+def get_open_lots(
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
+    as_of: date | None = None,
+    limit: _LOT_LIMIT = PAGE_LIMIT_DEFAULT,
+    offset: _LOT_OFFSET = 0,
+) -> OpenLotPage:
+    """Return one page of the open lots, oldest-opened first, with each lot's return since it opened.
+
+    Parameters
+    ----------
+    as_of
+        The date to price every open lot as of. Defaults to today.
+    limit
+        How many lots to return. Clamped to `PAGE_LIMIT_MAX`.
+    offset
+        How many lots to skip.
+
+    Returns
+    -------
+    OpenLotPage
+        The page's lots, plus the total a client needs to ask for the next one.
+
+    The 404 for an uncached ledger and the 422 for a missing price both come
+    out of `_lots_table`.
+    """
+    limit = min(limit, PAGE_LIMIT_MAX)
+    rows = _lots_table(session, user_id, as_of).open_lots
+    return OpenLotPage(
+        items=[OpenLotRow(**row) for row in _window(rows, ["opened_at", "symbol", "lot_id"], limit, offset)],
+        window_unit="lot",
+        total=rows.height,
+        limit=limit,
+        offset=offset,
+    )
+
+
+@router.get("/lots/closed")
+def get_closed_lots(
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
+    as_of: date | None = None,
+    limit: _LOT_LIMIT = PAGE_LIMIT_DEFAULT,
+    offset: _LOT_OFFSET = 0,
+) -> ClosedLotPage:
+    """Return one page of the closed lots, oldest-closed first, with each lot's excess return over a HYSA.
+
+    Parameters
+    ----------
+    as_of
+        Unused by the figures on a closed lot, whose window is finished;
+        accepted so all three lot routes take the same query.
+    limit
+        How many lots to return. Clamped to `PAGE_LIMIT_MAX`.
+    offset
+        How many lots to skip.
+
+    Returns
+    -------
+    ClosedLotPage
+        The page's lots, plus the total a client needs to ask for the next one.
+
+    The 404 for an uncached ledger and the 422 for a missing price both come
+    out of `_lots_table`.
+    """
+    limit = min(limit, PAGE_LIMIT_MAX)
+    rows = _lots_table(session, user_id, as_of).closed_lots
+    order = ["closed_at", "symbol", "lot_id", "closed_by_event_id"]
+    return ClosedLotPage(
+        items=[ClosedLotRow(**row) for row in _window(rows, order, limit, offset)],
+        window_unit="lot",
+        total=rows.height,
+        limit=limit,
+        offset=offset,
+    )
+
+
+@router.get("/lots/symbols")
+def get_symbol_rollup(
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
+    as_of: date | None = None,
+    limit: _SYMBOL_LIMIT = PAGE_LIMIT_DEFAULT,
+    offset: _SYMBOL_OFFSET = 0,
+) -> SymbolRollupPage:
+    """Return one page of the per-symbol rollup, by symbol: lifecycle stats and a money-weighted return.
+
+    Parameters
+    ----------
+    as_of
+        The date to value each symbol's remaining holding as of. Defaults to today.
+    limit
+        How many symbols to return. Clamped to `PAGE_LIMIT_MAX`.
+    offset
+        How many symbols to skip.
+
+    Returns
+    -------
+    SymbolRollupPage
+        The page's symbols, plus the total a client needs to ask for the next one.
+
+    The 404 for an uncached ledger and the 422 for a missing price both come
+    out of `_lots_table`.
+    """
+    limit = min(limit, PAGE_LIMIT_MAX)
+    rows = _lots_table(session, user_id, as_of).symbol_rollup
+    return SymbolRollupPage(
+        items=[SymbolRollupRow(**row) for row in _window(rows, ["symbol"], limit, offset)],
+        window_unit="symbol",
+        total=rows.height,
+        limit=limit,
+        offset=offset,
     )
 
 

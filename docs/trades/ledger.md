@@ -127,15 +127,22 @@ each row's computation is independent; here it deliberately isn't, so a
 `for` loop is the honest shape for this one function rather than forcing
 a vectorized expression to fake sequential state.
 
+It is **linear in the ledger**: the fold holds one `lots.LotBook` per
+symbol and each event costs O(1) amortized work in it. Up to `v1.12.0` it
+was not — the three per-event operations each rebuilt the symbol's whole
+lot list through a polars frame, so a replay was quadratic and a 10k-event
+ledger took 3.7 s (item C4b). Ten call sites replay, four of them once per
+event date, so that cost was multiplied rather than paid once.
+
 Per event type:
 
-- **BUY** → opens a new `Lot`, reduces cash
-- **SELL** → `lots.consume_fifo()` closes oldest lots first, increases cash.
+- **BUY** → `LotBook.open()` opens a new lot, reduces cash
+- **SELL** → `LotBook.consume_fifo()` closes oldest lots first, increases cash.
   Each closed portion gets `realized_gain`, a `LONG`/`SHORT` term (≥ 365
   days held = LONG), and a link to the closing event
 - **DEPOSIT / WITHDRAWAL / WITHHOLDING / FEE** → cash only
-- **DIVIDEND** → increases cash, **and** calls `lots.accrue_dividend()` on every open lot of that symbol — see "Dividend allocation" below
-- **SPLIT** → `lots.apply_split()` on open lots; cash untouched
+- **DIVIDEND** → increases cash, **and** `LotBook.accrue_dividend()` credits every open lot of that symbol — see "Dividend allocation" below
+- **SPLIT** → `LotBook.apply_split()` on that symbol's open lots; cash untouched
 
 To value the portfolio **as of a past date**, truncate the ledger to events
 on or before that date, then replay. This is how daily portfolio values,
@@ -145,10 +152,18 @@ monthly P&L, and as-of snapshots all work.
 
 ## Lots
 
-**Module:** `ledger/lots.py`
+**Module:** `ledger/lots.py` → `LotBook`
 
 Each **BUY** opens one lot. Lots are consumed **FIFO** (oldest `opened_at`
 first) on **SELL**.
+
+A `LotBook` holds one symbol's open lots in a `deque` kept in oldest-first
+order, so a SELL takes from the left and never sorts, plus a cumulative
+dividend-per-share figure that lets a `DIVIDEND` be recorded without
+touching a lot at all. Those two choices are the whole of the linear
+replay; the class docstring says what each replaced. The book is stateful
+and mutable, which is unusual for this codebase and deliberate — it is
+walk state, owned by one `replay_ledger` call and never shared.
 
 ### Open lot
 
@@ -161,19 +176,18 @@ The portion of a lot consumed by one SELL. Has its own exit price, holding
 period, and **realized gain**:
 
 ```
-realized_gain = shares × (exit_price − cost_per_share) − allocated_fees
+realized_gain = shares × (exit_price − cost_per_share)
 ```
 
 A single SELL may close multiple lots or only part of one lot.
 
-`allocated_fees` comes from `consume_fifo`'s `total_fees` parameter,
-divided pro rata by shares consumed — and that parameter **defaults to
-`0.0` and is never passed** on the replay path (`ledger.replay`), so in
-practice the term is always zero today. That is deliberate rather than an
-omission: a commission arrives as its own separate `FEE` event
-(`ibkr:{transactionID}:fee`), precisely so it never inflates a lot's cost
-basis or gets buried inside a realized gain. The parameter exists for a
-future source that reports a sale's fee inline instead.
+**No fee term, by design.** A commission arrives as its own separate `FEE`
+event (`ibkr:{transactionID}:fee`), so it never inflates a lot's cost basis
+or gets buried inside a realized gain. `consume_fifo` used to take a
+`total_fees` parameter that allocated an inline fee pro rata by shares
+consumed; nothing ever passed it, so the term was always zero, and it went
+with the rewrite rather than being carried across. The day a source reports
+a sale's fee inline, `LotBook.consume_fifo` is where it goes back.
 
 ### Term
 
@@ -187,13 +201,21 @@ advice.
 
 ### Dividend allocation
 
-When a `DIVIDEND` event is replayed, `lots.accrue_dividend()` splits the
+When a `DIVIDEND` event is replayed, `LotBook.accrue_dividend()` splits the
 cash amount across every **open lot of that symbol at that moment**, in
 proportion to shares held:
 
 ```
 lot.dividends_received += dividend_amount × (lot.shares / total_shares_held)
 ```
+
+That is the rule; the book does not compute it per lot. It adds
+`dividend_amount / total_shares_held` to a running per-share figure and
+derives a lot's total on the way out, banking the accrual and re-pinning
+the baseline whenever a lot's share count changes. The two are the same
+arithmetic to within `float64` rounding, which
+`tests/trades/ledger/test_replay_equivalence.py` asserts against the
+per-lot version over 30 generated ledgers.
 
 Key rules:
 
@@ -203,7 +225,7 @@ Key rules:
   event is processed get any allocation. A lot opened the next day gets
   nothing from that dividend, including a DRIP lot created by the
   dividend's own reinvestment `BUY`.
-- **Carries through partial sells.** When `consume_fifo()` partially closes
+- **Carries through partial sells.** When `LotBook.consume_fifo()` partially closes
   a lot, `dividends_received` splits proportionally:
   ```
   consumed_dividends = lot.dividends_received × consumed_shares / lot.shares

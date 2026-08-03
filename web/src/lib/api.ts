@@ -1,4 +1,4 @@
-import { fetchAllPages } from '@/lib/paging'
+import { fetchAllPages, type Page } from '@/lib/paging'
 import type {
   AllocationRow,
   BenchmarkSetting,
@@ -6,6 +6,7 @@ import type {
   BrokerConnection,
   CashHistoryPoint,
   CashSitting,
+  ClosedLot,
   DataQualityRow,
   DollarChart,
   GrowthOf100Point,
@@ -19,9 +20,11 @@ import type {
   LotsTable,
   MonthlyPnl,
   MonthlyPnlBySymbol,
+  OpenLot,
   Overview,
   RiskStat,
   SymbolPriceStatus,
+  SymbolRollup,
   SymbolSearchResult,
   SyncRun,
   SyncRunPage,
@@ -136,7 +139,31 @@ export const api = {
       headers: { 'Content-Type': 'application/merge-patch+json' },
       body: JSON.stringify(patch),
     }),
-  lots: (asOf?: string) => request<LotsTable>(asOf ? `/lots?as_of=${asOf}` : '/lots'),
+  // Three paged collections, each walked to the end and reassembled into the
+  // one object every consumer wants (C4a). The payload per response is
+  // bounded and nothing is silently truncated: `LotsTable.tsx` counts both
+  // lot lists for its tab labels and sorts and day-aggregates them in the
+  // browser, and the Settings export writes all three to files a user
+  // believes are complete — so a page would be the wrong answer here, and a
+  // page walk is the same pattern `ledgerExport` uses.
+  //
+  // Walked in parallel because the three requests are independent; each one
+  // costs its own FIFO replay of the ledger, which is affordable since C4b
+  // made that replay linear and was the reason this bound was refused in
+  // PR D.
+  lots: async (asOf?: string): Promise<LotsTable> => {
+    const asOfQuery = asOf ? `&as_of=${asOf}` : ''
+    const page = <T>(collection: string) =>
+      fetchAllPages<T>(({ limit, offset }) =>
+        request<Page<T>>(`/lots/${collection}?limit=${limit}&offset=${offset}${asOfQuery}`),
+      )
+    const [open_lots, closed_lots, symbol_rollup] = await Promise.all([
+      page<OpenLot>('open'),
+      page<ClosedLot>('closed'),
+      page<SymbolRollup>('symbols'),
+    ])
+    return { open_lots, closed_lots, symbol_rollup }
+  },
   risk: (range?: DateRange) => request<RiskStat>(withRange('/risk', range)),
   cashHistory: (range?: DateRange) => request<CashHistoryPoint[]>(withRange('/chart/cash-history', range)),
   cashSitting: () => request<CashSitting>('/cash-sitting'),

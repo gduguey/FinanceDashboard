@@ -813,8 +813,9 @@ def test_a_bulk_action_stays_linear_in_the_set_it_resolves(path: str, request_as
     `post_pattern_suggest_category_bulk` called
     `ledger.resolution.resolved_postings`, which replays the whole ledger
     through every overlay stage in Python. That is super-linear in the ledger
-    the way `holdings.lots_table` is (C4b), so it separates from a query over
-    the projection here long before it does on a wall clock.
+    the way `holdings.lots_table` was until item C4b made its replay linear,
+    so it separates from a query over the projection here long before it does
+    on a wall clock — `test_replay_scaling.py` is the gate over that one.
     """
     small = _median_post_seconds(request_as("small"), path, {})
     big = _median_post_seconds(request_as("big"), path, {})
