@@ -36,7 +36,8 @@ linear. A gate built on it would have passed the very defect it exists to
 catch.
 
 So this measures `sell_shares=1.0`, which lets the book grow in proportion
-to the ledger (5,439 open lots at 10k events against 1,113 at 2k), and
+to the ledger — **10,916 open lots at `BIG_EVENTS` against 1,113 at
+`SMALL_EVENTS`**, the two sizes this module actually replays — and
 `split_p=0.0`, because a `SPLIT` genuinely is O(open lots) — every lot's
 share count and cost basis change — so a ledger that both accumulates and
 splits at a fixed rate per event cannot be replayed in linear time by any

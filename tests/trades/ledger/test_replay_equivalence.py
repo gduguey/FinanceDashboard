@@ -283,6 +283,11 @@ def test_the_generated_ledgers_actually_exercise_every_event_type() -> None:
             assert present == {"DEPOSIT", "BUY", "SELL", "DIVIDEND", "WITHHOLDING", "FEE", "SPLIT"}, (
                 f"sell_p={sell_p} seed={seed} generated only {sorted(present)}"
             )
+            # `replay_ledger` derives cash from `amount` alone, so a trade
+            # carrying `amount=0` would make the cash comparison above about
+            # deposits, dividends and fees only.
+            trades = ledger.filter(pl.col("event_type").is_in(["BUY", "SELL"]))
+            assert trades["amount"].min() > 0.0, f"sell_p={sell_p} seed={seed} generated a cash-neutral trade"
 
 
 def test_the_low_sell_probability_really_does_accumulate_open_lots() -> None:

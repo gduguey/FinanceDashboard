@@ -16,7 +16,11 @@ whole history, which is the regime a buy-and-hold ledger is actually in.
 
 Every event type `ledger.signs` knows a direction for is produced, checked
 by a test rather than assumed — see
-`test_the_generated_ledgers_actually_exercise_every_event_type`.
+`test_the_generated_ledgers_actually_exercise_every_event_type`. A trade
+carries `amount = shares x price` as well as the two, because
+`replay_ledger` derives cash from `amount` alone: a `BUY` with `amount=0`
+is a trade that moves shares and no money, which would leave the
+equivalence battery comparing a cash balance no trade ever touched.
 """
 
 from __future__ import annotations
@@ -31,8 +35,17 @@ SYMBOLS = ("AAPL", "MSFT", "VTI", "SPY", "NVDA", "GOOG", "AMZN", "TSLA")
 """Eight symbols, so a replay holds eight books rather than one long one."""
 
 _START = datetime(2015, 1, 2, 10, 0)  # noqa: DTZ001 — a ledger event_datetime is naive, and the replay compares them
-_OPENING_DEPOSIT = 5_000_000.0
-"""Large enough that no generated `BUY` can be refused for want of cash."""
+_DEPOSIT_PER_EVENT = 5_000.0
+"""Scales the one opening deposit with the ledger's length.
+
+A generated event costs on the order of 2,000 in `BUY`s net of `SELL`s, so a
+flat deposit that funds a 2,000-event ledger leaves a 20,000-event one tens
+of millions overdrawn. Nothing enforces solvency — `replay_ledger` has no
+notion of refusing a `BUY` for want of cash, and a ledger records what
+happened rather than being validated — but a cash balance that is deeply
+negative at one measured size and positive at another is a difference
+between the two ledgers that nothing intends.
+"""
 
 _BUY_THRESHOLD = 0.55
 """Below this a roll is a `BUY`, which is what makes the mix buy-heavy."""
@@ -105,7 +118,7 @@ def generated_ledger(
     """
     rng = random.Random(seed)  # noqa: S311 — a reproducible ledger, not a secret
     held = dict.fromkeys(SYMBOLS, 0.0)
-    rows: list[dict] = [_row("e0", _START, "CASH", "DEPOSIT", amount=_OPENING_DEPOSIT)]
+    rows: list[dict] = [_row("e0", _START, "CASH", "DEPOSIT", amount=n_events * _DEPOSIT_PER_EVENT)]
     day = 0
     i = 0
     split_threshold = 1.0 - split_p
@@ -118,12 +131,14 @@ def generated_ledger(
         event_id = f"e{i}"
         if roll < _BUY_THRESHOLD:
             shares = float(rng.randint(1, 40))
+            price = 50.0 + rng.random() * 300
             held[symbol] += shares
-            rows.append(_row(event_id, when, symbol, "BUY", shares=shares, price=50.0 + rng.random() * 300))
+            rows.append(_row(event_id, when, symbol, "BUY", shares=shares, price=price, amount=shares * price))
         elif roll < _BUY_THRESHOLD + sell_p and held[symbol] > max(1.0, sell_shares or 0.0):
             shares = sell_shares if sell_shares is not None else float(rng.randint(1, max(1, int(held[symbol] // 3))))
+            price = 50.0 + rng.random() * 300
             held[symbol] -= shares
-            rows.append(_row(event_id, when, symbol, "SELL", shares=shares, price=50.0 + rng.random() * 300))
+            rows.append(_row(event_id, when, symbol, "SELL", shares=shares, price=price, amount=shares * price))
         elif roll < _DIVIDEND_THRESHOLD:
             rows.append(_row(event_id, when, symbol, "DIVIDEND", amount=rng.random() * 200))
         elif roll < _WITHHOLDING_THRESHOLD:

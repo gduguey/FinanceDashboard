@@ -43,6 +43,16 @@ raise: it only has to be below the smallest remainder worth opening a
 `ClosedLot` for.
 """
 
+_DUST_SHARES = 1e-9
+"""Below this, a book's total share count is float residue rather than a holding.
+
+Not a share count anyone can own — a fractional-share broker quotes six
+decimals — so the only way under it is a partial close whose requested
+shares missed the lot's own by rounding, which leaves a remainder of order
+`1e-13` open. `accrue_dividend` refuses to divide by such a total, because
+doing so would put a permanently enormous number into `divps`.
+"""
+
 
 @dataclass(frozen=True)
 class Lot:
@@ -182,6 +192,13 @@ class LotBook:
     identity holds across every share-count change. The old version
     rewrote every open lot of the symbol on every `DIVIDEND`.
 
+    Two operations are still O(open lots), and both are meant to be:
+    `apply_split`, because a split genuinely changes every lot; and a
+    dividend paid to a book holding only float dust, where dividing by the
+    total would poison the accumulator for good (see `accrue_dividend`).
+    Neither is reachable often enough to matter — a split is rare and dust
+    needs a sale that missed a lot's own share count by rounding.
+
     The arithmetic is unchanged and asserted to be: see
     `tests/trades/ledger/test_replay_equivalence.py`, which replays
     generated ledgers against an independent list-and-frame implementation
@@ -245,6 +262,17 @@ class LotBook:
             self.lots.append(lot)
         self.total_shares += shares
 
+    def _bank_and_rebase(self) -> None:
+        """Freeze every lot's accrual so far and re-pin its baseline, leaving `divps` free to reset.
+
+        O(open lots), so it is only called where the accumulator cannot be
+        used: on a book whose `total_shares` is dust (see
+        `accrue_dividend`).
+        """
+        for lot in self.lots:
+            lot.banked_dividends = self.accrued(lot)
+            lot.divps_at_open = self.divps
+
     def accrue_dividend(self, amount: float) -> None:
         """Split a dividend across every lot currently open, in proportion to shares held.
 
@@ -252,12 +280,30 @@ class LotBook:
         book holding no shares accrues nothing, since there is nobody to
         split it across.
 
+        **The one case the accumulator cannot express** is a book holding
+        dust: a partial close whose `shares_to_consume` misses the lot's own
+        `shares` by float noise leaves a remainder of order `1e-13`, and
+        `amount / 1e-13` would put a number 13 orders of magnitude too large
+        into `divps` — permanently, since it only ever grows. Every lot
+        opened afterwards would then derive its total from the difference of
+        two enormous floats, and a later ordinary dividend would be lost to
+        cancellation. So that case splits the dividend per lot and rebases,
+        which is what the implementation this replaced did on every
+        dividend: the same arithmetic, at O(open lots), on a book that holds
+        almost nothing.
+
         Parameters
         ----------
         amount
             The dividend amount to split.
         """
         if self.total_shares <= 0.0:
+            return
+        if self.total_shares < _DUST_SHARES:
+            held = self.total_shares
+            self._bank_and_rebase()
+            for lot in self.lots:
+                lot.banked_dividends += amount * lot.shares / held
             return
         self.divps += amount / self.total_shares
 
@@ -342,6 +388,18 @@ class LotBook:
                 lot.shares -= take
             self.total_shares -= take
             remaining -= take
+        if not self.lots:
+            # An emptied book holds no baseline, so both running figures go
+            # with the last lot. `divps` is the one that matters: it only ever
+            # grows, so a book that fills again would otherwise hand every new
+            # lot a baseline inherited from a position nobody holds any more,
+            # and the difference of two large floats is where a small later
+            # dividend gets lost. `total_shares` is defensive — `take` is
+            # clamped to the lot, so the loop can never subtract more than was
+            # added, but the two run in different orders and float addition
+            # does not re-associate exactly.
+            self.total_shares = 0.0
+            self.divps = 0.0
         return closed
 
     def apply_split(self, ratio: float) -> None:

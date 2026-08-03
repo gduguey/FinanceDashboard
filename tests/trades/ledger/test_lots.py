@@ -187,3 +187,49 @@ def test_apply_split_keeps_dividends_already_accrued_and_rebases_the_ones_after_
     assert book.open_lots()[0].dividends_received == pytest.approx(100.0)
     book.accrue_dividend(40.0)
     assert book.open_lots()[0].dividends_received == pytest.approx(140.0)
+
+
+def test_a_sale_within_tolerance_of_the_whole_position_empties_the_book() -> None:
+    # `_SHORTFALL_TOLERANCE` admits it, and `take` is clamped to the lot, so the
+    # overshoot is dropped rather than subtracted from anything.
+    book = _book(("1", "2026-01-01", 10.0, 90.0))
+    closed = _consume(book, 10.0 + 5e-10)
+    assert book.open_lots() == []
+    assert closed[0].shares == pytest.approx(10.0)
+    assert book.total_shares == pytest.approx(0.0)
+
+
+def test_an_emptied_book_forgets_its_dividend_baseline() -> None:
+    # `divps` only ever grows, so a book that fills again would otherwise hand
+    # every new lot a baseline inherited from a position nobody holds any more.
+    book = _book(("1", "2026-01-01", 10.0, 90.0))
+    book.accrue_dividend(100.0)
+    _consume(book, 10.0)
+    assert book.divps == pytest.approx(0.0)
+
+    book.open(lot_id="2", opened_at=datetime(2026, 4, 1), shares=10.0, cost_per_share=90.0)
+    book.accrue_dividend(20.0)
+    assert book.open_lots()[0].dividends_received == pytest.approx(20.0)
+
+
+def test_a_dividend_on_a_dust_position_does_not_poison_the_accumulator() -> None:
+    """A partial close that misses a lot's shares by float noise leaves dust behind.
+
+    Dividing a dividend by that dust would put a number 13 orders of magnitude
+    too large into `divps`, permanently, and every lot opened afterwards would
+    then derive its own total from the difference of two enormous floats.
+    """
+    book = _book(("1", "2026-01-01", 10.0, 90.0))
+    book.accrue_dividend(100.0)
+    _consume(book, 10.0 - 1e-13)
+    assert 0.0 < book.total_shares < 1e-9, "the sale was meant to leave a dust remainder open"
+
+    book.accrue_dividend(50.0)
+    assert book.divps < 1e6, f"a dust position inflated the per-share accumulator to {book.divps:.3e}"
+    # The dust lot is still the only holder, so it takes the whole dividend —
+    # exactly what the per-lot implementation this replaced would have given it.
+    assert book.open_lots()[0].dividends_received == pytest.approx(50.0, abs=1e-6)
+
+    book.open(lot_id="2", opened_at=datetime(2026, 4, 1), shares=10.0, cost_per_share=90.0)
+    book.accrue_dividend(20.0)
+    assert _open_by_id(book)["2"].dividends_received == pytest.approx(20.0)
