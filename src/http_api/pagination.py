@@ -22,9 +22,12 @@ collection fail on the request that is trying hardest to succeed. `total` in
 the response is what tells such a client that more remains.
 
 The cap is a bound on one *response*, and says nothing about the work behind
-it. `GET /lots` is the endpoint where those differ: its page is clamped here
-while its FIFO match still replays the whole trades ledger, which its own
-docstring states outright rather than letting this constant imply otherwise.
+it. The three `/trades/lots/*` reads are where those differ most: each page
+is clamped here while the FIFO match behind it replays the whole trades
+ledger, which their own docstrings state outright rather than letting this
+constant imply otherwise. Item C4a is only affordable because that replay is
+linear (C4b) — a bound over a read whose every page redoes all the work is a
+regression, not a bound, which is why the same item was declined in PR D.
 """
 
 

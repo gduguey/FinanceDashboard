@@ -424,12 +424,39 @@ class SymbolRollupRow(BaseModel):
     xirr: float
 
 
-class LotsTable(BaseModel):
-    """The trade-level table: open lots, closed lots, per-symbol rollup."""
+class OpenLotPage(Page[OpenLotRow, Literal["lot"]]):
+    """One page of the open lots, cut by lot and ordered oldest-opened first.
 
-    open_lots: list[OpenLotRow]
-    closed_lots: list[ClosedLotRow]
-    symbol_rollup: list[SymbolRollupRow]
+    The trade-level table used to be one unbounded `LotsTable` response
+    carrying all three of its collections at once. It is three paged
+    collections now (item C4a), because their lengths are independent: one
+    envelope can only cut one collection, and cutting by *symbol* instead
+    would have bounded nothing — a single symbol can hold every lot in the
+    ledger.
+
+    Its window unit is `lot`, which is also what `items` counts: nothing
+    here groups rows that have to stay together on one page, unlike
+    `accounting`'s `GET /postings`.
+    """
+
+
+class ClosedLotPage(Page[ClosedLotRow, Literal["lot"]]):
+    """One page of the closed lots, cut by lot and ordered oldest-closed first.
+
+    Shares `OpenLotPage`'s window unit rather than inventing a
+    `closed_lot` one: both count tax lots, and a client walking either does
+    the identical arithmetic. What distinguishes them is the row type.
+    """
+
+
+class SymbolRollupPage(Page[SymbolRollupRow, Literal["symbol"]]):
+    """One page of the per-symbol rollup, cut by symbol and ordered by symbol.
+
+    Bounded like the other two even though the number of distinct symbols a
+    portfolio holds is small: a collection with no page is a collection
+    whose size is somebody's assumption, and this one's rows each carry an
+    XIRR solve.
+    """
 
 
 class RiskStat(BaseModel):
