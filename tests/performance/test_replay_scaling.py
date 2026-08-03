@@ -46,17 +46,25 @@ ledger has, which is the one the cost mattered on.
 
 Where the bounds come from
 --------------------------
-Local measurement over three seeds, quoted on each constant below, and
-local-only for now where `test_read_path_latency.py`'s bounds are derived
-from six CI runs. That difference is defensible here and would not be
-there: this measurement is pure CPU over an in-memory frame — no query
-planner, no statistics, no second tenant, no I/O — so the only variance is
-the runner's own scheduling, which the ratio divides out. It has none of
-the data-dependent variance that made item C8 a re-derivation exercise.
+Local measurement, quoted on each constant below, and local-only where
+`test_read_path_latency.py`'s bounds come from six CI runs. There is no
+data-dependent variance to characterise here — no query planner, no
+statistics, no second tenant, no I/O — so what is left is the runner's own
+scheduling, which the ratio divides out.
 
-The figures to beat are the retired implementation's own, measured through
+Every run prints its median and its ratio, for the reason item C8 exists:
+that item had to generate six CI runs by hand because the figures it needed
+to re-derive a bound from had never been recorded anywhere. From here they
+accumulate in the job log.
+
+The one honest caveat is that the *small* measurement is close to the noise
+floor — 5 to 9 ms across eight local runs, against 57 to 68 ms for the big
+one — so the ratio's spread is wider than the underlying cost curve's:
+7.29x to 13.11x for the same code on the same two ledgers. The bound
+absorbs that rather than pretending it away. The figures to beat are the
+retired implementation's own, measured through
 `test_replay_equivalence._reference_replay` on the same ledgers: **36.77x,
-41.85x and 49.67x** for the same 10x, against 9.96x to 11.63x now.
+41.85x and 49.67x**.
 """
 
 from __future__ import annotations
@@ -90,25 +98,28 @@ _REPEATS = 7
 _WARMUP = 1
 """Replays made and thrown away first, so Polars' frame construction warm-up is not in the sample."""
 
-MAX_REPLAY_SCALING_FACTOR = 18.0
+MAX_REPLAY_SCALING_FACTOR = 22.0
 """How much dearer replaying the big ledger may be than the small one, for 10x the events.
 
-Linear is 10.0 and quadratic is 100.0. Worst observed locally across three
-seeds: **11.63x**, in a band of 9.96-11.63. Eighteen is 1.55x that, a
-little tighter proportionally than `MAX_SCALING_FACTOR`'s 1.6x next door,
-which the absence of database variance here earns.
+Linear is 10.0 and quadratic is 100.0. Worst observed locally across eight
+runs and three seeds: **13.11x**, in a band of 7.29-13.11. Twenty-two is
+1.68x that, matching `MAX_SCALING_FACTOR`'s own 1.6x margin next door
+rather than tightening on a distribution this small.
 
-The residual above 10.0 is not a hidden super-linearity in the walk. It is
-the live object set growing: the fold holds every open lot and every closed
-lot in memory, so CPython's generational collector has proportionally more
-tracked objects to walk on each pass. Per-event cost moves 2.60 to 2.99
-microseconds between the two sizes, and it flattens as the sizes grow
-rather than compounding.
+Two things sit between the healthy figure and the nominal 10.0, and neither
+is a hidden super-linearity in the walk. Most of it is the small
+measurement's noise floor: 5-9 ms is a handful of scheduler quanta, so its
+own spread lands almost entirely in the ratio. The rest is the live object
+set growing — the fold holds every open lot and every closed lot in memory,
+so CPython's generational collector walks proportionally more tracked
+objects on each pass, which moves per-event cost from about 2.6 to about
+3.0 microseconds and flattens rather than compounding.
 
 What it rejects: the implementation this replaced measures 36.77x, 41.85x
-and 49.67x on these same three ledgers. Eighteen sits comfortably between,
-and would also reject a partial regression — a `sort` restored to the
-`SELL` branch alone, without the per-`DIVIDEND` rebuild.
+and 49.67x on these same three ledgers, so the nearest broken figure is
+1.67x above this bound and the worst healthy one 1.68x below it. It would
+also reject a partial regression — a `sort` restored to the `SELL` branch
+alone, without the per-`DIVIDEND` rebuild.
 """
 
 MAX_BIG_REPLAY_SECONDS = 2.0
@@ -144,7 +155,14 @@ def _median_replay_seconds(n_events: int) -> float:
         started = time.perf_counter()
         replay_ledger(ledger, CONFIG)
         samples.append(time.perf_counter() - started)
-    return statistics.median(samples)
+    median = statistics.median(samples)
+    # Printed for the same reason `test_read_path_latency.py` prints its own
+    # medians: the CI job runs `pytest -m perf -v -s`, so every run leaves its
+    # figures in the log, and re-deriving a bound from a distribution of runs
+    # is only possible if the runs recorded one. Item C8 had to generate six
+    # of them by hand because the numbers were not there to read.
+    print(f"  replay {n_events} events -> {median * 1000:.1f} ms median of {_REPEATS}")  # noqa: T201
+    return median
 
 
 def test_the_measured_ledgers_accumulate_open_lots_in_proportion_to_their_length() -> None:
@@ -172,6 +190,7 @@ def test_a_replay_scales_with_the_ledger_and_not_with_the_lots_it_has_open() -> 
     small = _median_replay_seconds(SMALL_EVENTS)
     big = _median_replay_seconds(BIG_EVENTS)
     ratio = big / small
+    print(f"  scaling {SMALL_EVENTS} -> {BIG_EVENTS} events: {ratio:.2f}x for {EVENT_RATIO:.0f}x the events")  # noqa: T201
 
     assert ratio < MAX_REPLAY_SCALING_FACTOR, (
         f"replaying {BIG_EVENTS} events cost {ratio:.2f}x replaying {SMALL_EVENTS} "
