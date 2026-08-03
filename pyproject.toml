@@ -213,13 +213,13 @@ max-args = 7  # symbol/date-range/config/behavior-flag/session-override function
 ]
 
 [tool.pytest.ini_options]
-# `-m "not perf"` keeps the latency gate out of the default run: it seeds tens
-# of thousands of rows into a migrated scratch database and asserts on elapsed
+# `-m "not perf"` keeps the timing gates out of the default run: they seed tens
+# of thousands of rows into a migrated scratch database and assert on elapsed
 # time, which is neither fast nor meaningful on a laptop competing with a
-# browser. CI runs it as its own job with `-m perf`; run it locally the same
-# way. A command-line `-m` overrides this one, since addopts is prepended.
+# browser. CI runs them as their own job with `-m perf`; run them locally the
+# same way. A command-line `-m` overrides this one, since addopts is prepended.
 addopts = "--strict-markers --strict-config -m \"not perf\""
 testpaths = ["tests"]
 markers = [
-    "perf: latency gate over the paginated read paths — deselected by default, see tests/performance/",
+    "perf: the timing gates — read-path latency and replay scaling, deselected by default, see tests/performance/",
 ]

@@ -19,13 +19,16 @@ output frames is compared. If the two ever disagree the test says which
 column and by how much, which is the diagnostic a "lots look wrong" bug
 report cannot give you.
 
-The generated ledgers are the point. `sell_p` is what decides how many
-lots stay open, so it is swept: at 0.20 the book is consumed roughly as
-fast as it fills and lots stay few, at 0.03 it accumulates for the whole
-history, which is both the regime a real buy-and-hold ledger is in and the
-one where the accumulator has the most state to get wrong. `net_dividends`
-is swept because it changes the accrued amount but nothing else, so a bug
-that only shows up net would otherwise hide behind the default.
+The generated ledgers are the point, and come from
+`tests/support/generated_ledger.py` — shared with
+`tests/performance/test_replay_scaling.py` so that the shape this verifies
+and the shape that one measures cannot drift apart. `sell_p` is what
+decides how many lots stay open, so it is swept: at 0.20 the book is
+consumed roughly as fast as it fills and lots stay few, at 0.03 it
+accumulates over the whole history, which is where the accumulator has the
+most state to get wrong. `net_dividends` is swept because it changes the
+accrued amount and nothing else, so a bug that only shows up net would
+otherwise hide behind the default.
 
 Kept in the default suite rather than marked `perf`: the 30 cases cost
 about four seconds, nearly all of it the reference implementation being
@@ -41,14 +44,12 @@ total — fail all 30 cases each.
 
 from __future__ import annotations
 
-import random
-from datetime import datetime, timedelta
-from functools import cache
 from typing import TYPE_CHECKING
 
 import polars as pl
 import pytest
 
+from tests.support.generated_ledger import generated_ledger
 from trades.config import AppConfig
 from trades.ledger.lots import ClosedLot, Lot, closed_lots_to_frame, lots_to_frame
 from trades.ledger.replay import ReplayResult, _withholding_by_symbol_date, replay_ledger
@@ -56,6 +57,7 @@ from trades.ledger.signs import cash_effect
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
+    from datetime import datetime
 
 CONFIG = AppConfig()
 
@@ -72,7 +74,6 @@ suite's cost for coverage the sweep already provides.
 
 _SELL_PROBABILITIES = (0.20, 0.08, 0.03)
 _SEEDS = (1, 2, 3, 4, 5)
-_SYMBOLS = ("AAPL", "MSFT", "VTI", "SPY", "NVDA", "GOOG", "AMZN", "TSLA")
 
 _RELATIVE_TOLERANCE = 1e-9
 """Per-column tolerance, relative to the column's own largest magnitude.
@@ -233,76 +234,6 @@ def _reference_replay(rows: pl.DataFrame, *, net_dividends: bool) -> ReplayResul
 
 
 # --------------------------------------------------------------------------
-# The generated ledgers.
-# --------------------------------------------------------------------------
-
-
-@cache
-def _generated_ledger(n_events: int, seed: int, sell_p: float) -> pl.DataFrame:
-    """A chronological ledger of `n_events` events, buy-heavy the way a real one is.
-
-    Cached because each `(seed, sell_p)` pair is replayed twice — once per
-    `net_dividends` value — and generating it costs more than a replay now
-    does.
-    """
-    rng = random.Random(seed)
-    start = datetime(2015, 1, 2, 10, 0)  # naive, like every ledger timestamp
-    held = dict.fromkeys(_SYMBOLS, 0.0)
-    rows: list[dict] = [_row("e0", start, "CASH", "DEPOSIT", amount=5_000_000.0)]
-    day = 0
-    i = 0
-    while len(rows) < n_events:
-        day += rng.choice([0, 0, 1, 1, 2, 3])
-        when = start + timedelta(days=day, minutes=i % 300)
-        symbol = rng.choice(_SYMBOLS)
-        roll = rng.random()
-        i += 1
-        event_id = f"e{i}"
-        if roll < 0.55:
-            shares = float(rng.randint(1, 40))
-            held[symbol] += shares
-            rows.append(_row(event_id, when, symbol, "BUY", shares=shares, price=50.0 + rng.random() * 300))
-        elif roll < 0.55 + sell_p and held[symbol] > 1:
-            shares = float(rng.randint(1, max(1, int(held[symbol] // 3))))
-            held[symbol] -= shares
-            rows.append(_row(event_id, when, symbol, "SELL", shares=shares, price=50.0 + rng.random() * 300))
-        elif roll < 0.93:
-            rows.append(_row(event_id, when, symbol, "DIVIDEND", amount=rng.random() * 200))
-        elif roll < 0.97:
-            rows.append(_row(event_id, when, symbol, "WITHHOLDING", amount=rng.random() * 30))
-        elif roll < 0.995:
-            rows.append(_row(event_id, when, "CASH", "FEE", amount=rng.random() * 5))
-        else:
-            held[symbol] *= 2
-            rows.append(_row(event_id, when, symbol, "SPLIT", meta={"ratio": 2.0}))
-    metas = [row.pop("meta") for row in rows]
-    return pl.DataFrame(rows).with_columns(meta=pl.Series("meta", metas, dtype=pl.Object))
-
-
-def _row(
-    event_id: str,
-    when: datetime,
-    symbol: str,
-    event_type: str,
-    shares: float | None = None,
-    price: float | None = None,
-    amount: float = 0.0,
-    meta: dict | None = None,
-) -> dict:
-    return {
-        "event_id": event_id,
-        "event_datetime": when,
-        "symbol": symbol,
-        "event_type": event_type,
-        "shares": shares,
-        "price": price,
-        "amount": amount,
-        "currency": "USD",
-        "meta": meta or {},
-    }
-
-
-# --------------------------------------------------------------------------
 # The comparison.
 # --------------------------------------------------------------------------
 
@@ -330,7 +261,7 @@ def _assert_frames_match(label: str, actual: pl.DataFrame, expected: pl.DataFram
 @pytest.mark.parametrize("seed", _SEEDS)
 @pytest.mark.parametrize("sell_p", _SELL_PROBABILITIES)
 def test_the_replay_matches_the_implementation_it_replaced(sell_p: float, seed: int, net_dividends: bool) -> None:
-    ledger = _generated_ledger(_EVENTS, seed, sell_p)
+    ledger = generated_ledger(_EVENTS, seed, sell_p)
     actual = replay_ledger(ledger, CONFIG, net_dividends=net_dividends)
     expected = _reference_replay(ledger, net_dividends=net_dividends)
 
@@ -347,7 +278,7 @@ def test_the_generated_ledgers_actually_exercise_every_event_type() -> None:
     # equivalence battery: an input the fixture never produced.
     for sell_p in _SELL_PROBABILITIES:
         for seed in _SEEDS:
-            ledger = _generated_ledger(_EVENTS, seed, sell_p)
+            ledger = generated_ledger(_EVENTS, seed, sell_p)
             present = set(ledger["event_type"].unique().to_list())
             assert present == {"DEPOSIT", "BUY", "SELL", "DIVIDEND", "WITHHOLDING", "FEE", "SPLIT"}, (
                 f"sell_p={sell_p} seed={seed} generated only {sorted(present)}"
@@ -358,7 +289,7 @@ def test_the_low_sell_probability_really_does_accumulate_open_lots() -> None:
     # The regime the accumulator has the most state to get wrong in. If the
     # generator ever stops producing it, the battery above still passes and
     # stops testing what it is for.
-    few = replay_ledger(_generated_ledger(_EVENTS, 1, 0.20), CONFIG)
-    many = replay_ledger(_generated_ledger(_EVENTS, 1, 0.03), CONFIG)
+    few = replay_ledger(generated_ledger(_EVENTS, 1, 0.20), CONFIG)
+    many = replay_ledger(generated_ledger(_EVENTS, 1, 0.03), CONFIG)
     assert len(many.open_lots) > 2 * len(few.open_lots)
     assert not few.closed_lots.is_empty()
