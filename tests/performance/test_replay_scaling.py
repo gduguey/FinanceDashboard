@@ -61,7 +61,8 @@ The one honest caveat is that the *small* measurement is close to the noise
 floor — 5 to 9 ms across eight local runs, against 57 to 68 ms for the big
 one — so the ratio's spread is wider than the underlying cost curve's:
 7.29x to 13.11x for the same code on the same two ledgers. The bound
-absorbs that rather than pretending it away. The figures to beat are the
+absorbs that rather than pretending it away. The first CI run landed at
+10.74x, inside that band, which is the pure-CPU claim above holding. The figures to beat are the
 retired implementation's own, measured through
 `test_replay_equivalence._reference_replay` on the same ledgers: **36.77x,
 41.85x and 49.67x**.
@@ -106,6 +107,12 @@ runs and three seeds: **13.11x**, in a band of 7.29-13.11. Twenty-two is
 1.68x that, matching `MAX_SCALING_FACTOR`'s own 1.6x margin next door
 rather than tightening on a distribution this small.
 
+**First CI run: 10.74x** (9.1 ms against 98.1 ms), inside the local band
+rather than the roughly-double-the-local-ratio the runners produce for the
+database-backed cases. That is what the pure-CPU argument above predicts,
+and it is one datapoint rather than a distribution — which is why the
+margin stays where the local spread put it.
+
 Two things sit between the healthy figure and the nominal 10.0, and neither
 is a hidden super-linearity in the walk. Most of it is the small
 measurement's noise floor: 5-9 ms is a handful of scheduler quanta, so its
@@ -125,10 +132,12 @@ alone, without the per-`DIVIDEND` rebuild.
 MAX_BIG_REPLAY_SECONDS = 2.0
 """Wall-clock ceiling for one replay of a 20,000-event accumulating ledger.
 
-Worst observed locally: **88 ms**. Two seconds is 23x that, deliberately
-looser than the 8-12x the latency gate's wall clocks carry: those have six
-CI runs behind them and this has none, and a replay runs on whatever core
-the runner gives a single Python thread with no server to amortize against.
+Worst observed locally: **88 ms**; first CI run **97.7 ms**, so a runner
+costs this about 1.1x rather than the several-fold the database-backed wall
+clocks absorb. Two seconds is 20x that, deliberately looser than the 8-12x
+the latency gate's wall clocks carry: those have six CI runs behind them
+and this has one, and a replay runs on whatever core the runner gives a
+single Python thread with no server to amortize against.
 
 It is the backstop, not the instrument. What it catches is a collapse the
 ratio cannot see — the same constant factor at both sizes — and the number
